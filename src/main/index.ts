@@ -1,7 +1,8 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, Notification, shell } from 'electron';
 import { appendFileSync } from 'node:fs';
 import { createShellWindow, initShell, onShellEvent, quitApp, showOrFocusShell, toggleShell } from './shellWindow';
 import { createTray } from './tray';
+import { registerHotkeys } from './hotkeys';
 import { userDataDir } from './paths';
 
 if (process.env.DS_SHELL_USER_DATA) {
@@ -42,7 +43,10 @@ if (!gotLock) {
 
   // 顶层 `await app.whenReady()` 在 ESM 入口会死锁（Task 2 踩过），只能用 then。
   void app.whenReady().then(() => {
-    settingsStore = initShell(userDataDir());
+    // initShell 的返回值是全进程唯一的 store 句柄；局部 const 收窄非 null，
+    // 托盘与快捷键共用同一句柄，绝不再建第二个 store。
+    const settings = initShell(userDataDir());
+    settingsStore = settings;
     createShellWindow();
     // 关窗后托盘是唯一唤起入口；退出直接走 quitApp()——quitters/quitEmitted 是
     // 进程级永久闩（Task 6 交接裁决），托盘不做可取消退出，否则 before-quit +
@@ -50,9 +54,24 @@ if (!gotLock) {
     tray = createTray({
       onToggle: toggleShell,
       onShow: showOrFocusShell,
-      onSettings: () => { if (settingsStore) void shell.openPath(settingsStore.path()); },
+      onSettings: () => { void shell.openPath(settings.path()); },
       onQuit: quitApp,
     });
+    // 全局快捷键：跨应用唤起是常驻壳的核心价值。冲突走一条系统通知而不是弹窗，
+    // 让用户知道"为什么按了没反应"，而不是静默失灵。
+    const hotkeys = registerHotkeys({
+      toggleHotkey: settings.get().toggleHotkey,
+      quickAskHotkey: settings.get().quickAskHotkey,
+      onToggle: toggleShell,
+      onQuickAsk: () => { /* Plan 2 的划词注入接管此处；当前仅唤起窗口 */ showOrFocusShell(); },
+      onConflict: (which, key) => {
+        new Notification({
+          title: '快捷键不可用',
+          body: `${which === 'toggle' ? '唤起' : '划词'}快捷键 ${key} 注册失败，请修改 ${settings.path()} 后重启应用`,
+        }).show();
+      },
+    });
+    app.on('will-quit', () => { hotkeys.dispose(); });
     // 托盘常驻：故意不因为窗口全部关闭而退出（hide 进托盘是主路径，
     // 这里兜住 closeToTray=false 时用户关掉最后一个窗口还想留在托盘的场景）。
     app.on('window-all-closed', () => { /* 空实现：托盘常驻，故意不因窗口关闭而退出 */ });

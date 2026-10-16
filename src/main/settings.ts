@@ -45,6 +45,13 @@ export const HOTKEY_NAMED_KEYS = [
 // 于是 CommandOrControl+Shift+Enter / Space / F1 这类合法 Electron accelerator 被误拒。
 const HOTKEY_MOD_ALT = HOTKEY_MODIFIERS.join('|');
 const HOTKEY_KEY_ALT = [...HOTKEY_NAMED_KEYS, 'F(?:[1-9]|1[0-9]|2[0-4])', '[A-Za-z0-9]'].join('|');
+
+// F4 裁决 + T3-5 deferred：键位判定必须是导出表，供 Task 8 的 parseAccelerator 复用。
+// F1–F24 区间与单字母数字规则此前只活在 HOTKEY_RE 的内联字面量里；若 Task 8 只遍历
+// HOTKEY_NAMED_KEYS 就会静默拒绝功能键——settings 放行、注册期误报冲突，两处真相源。
+// 导出这一个已编译谓词，全项目就只有这一份键位语法。
+export const HOTKEY_KEY_RE = new RegExp(`^(?:${HOTKEY_KEY_ALT})$`);
+
 const HOTKEY_RE = new RegExp(`^(?:${HOTKEY_MOD_ALT})(?:\\+(?:${HOTKEY_MOD_ALT}))*\\+(?:${HOTKEY_KEY_ALT})$`);
 
 function quarantine(file: string): void {
