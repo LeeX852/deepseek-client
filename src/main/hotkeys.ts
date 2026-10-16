@@ -21,8 +21,11 @@ function getGlobalShortcut(): GlobalShortcutLike {
 
 // 语法唯一真相源 = settings.ts（F4 裁决）：修饰键查 HOTKEY_MODIFIERS 表，
 // 键位查导出的 HOTKEY_KEY_RE（单字母数字 | F1–F24 | 具名键）。此处不再字面化第二份语法。
+// R24：split 后不 filter(Boolean)——空片段（连续/行首/行尾的 '+'，如 "Ctrl+Alt++D"）
+// 必须与 store 的 HOTKEY_RE 同判拒绝：'' 既不在修饰表也不是合法键位，自然落进
+// unknown-modifier / bad-key。曾经的宽容过滤让 parser 放行 store 拒绝的值，两处真相源。
 export function parseAccelerator(accel: string): { ok: boolean; reason?: string } {
-  const parts = accel.split('+').filter(Boolean);
+  const parts = accel.split('+');
   if (parts.length < 2) return { ok: false, reason: 'needs-modifier' };
   const mods = parts.slice(0, -1);
   const key = parts.at(-1) as string;

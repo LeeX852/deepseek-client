@@ -14,6 +14,23 @@ describe('parseAccelerator', () => {
     expect(parseAccelerator('Hyperspace+D').ok).toBe(false);
   });
 
+  // R24：parser 与 store 必须同一门语法。此前的 split('+').filter(Boolean) 会吞掉
+  // 空片段，让 "CommandOrControl+Alt++D" 在 parseAccelerator 放行、却被 store 的
+  // HOTKEY_RE 拒绝——两处真相源。去掉宽容后空片段落在修饰键/键位表之外，直接拒绝。
+  it('拒绝空片段（连续/行首/行尾的 +），与 store 的 HOTKEY_RE 判定一致', () => {
+    expect(parseAccelerator('CommandOrControl+Alt++D')).toEqual({ ok: false, reason: 'unknown-modifier' });
+    expect(parseAccelerator('+CommandOrControl+D')).toEqual({ ok: false, reason: 'unknown-modifier' });
+    expect(parseAccelerator('CommandOrControl+Alt+')).toEqual({ ok: false, reason: 'bad-key' });
+  });
+
+  it('双向一致：含空片段的加速器，parser 放行与否必须与 normalizeSettings 相同', async () => {
+    const { normalizeSettings } = await import('../../src/main/settings');
+    for (const accel of ['CommandOrControl+Alt++D', '+CommandOrControl+D', 'CommandOrControl+Alt+', 'Alt++', '++']) {
+      const storeAccepts = normalizeSettings({ toggleHotkey: accel }).toggleHotkey === accel;
+      expect(parseAccelerator(accel).ok).toBe(storeAccepts);
+    }
+  });
+
   // F4/T3-5 deferred 裁决：parseAccelerator 与 normalizeSettings 必须共用同一份语法。
   // HOTKEY_RE 允许 F1–F24 与具名键；若 parseAccelerator 只遍历具名表而漏掉功能键区间，
   // settings 里合法的 CommandOrControl+Alt+F12 会在注册期被误报冲突。

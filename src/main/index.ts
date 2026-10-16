@@ -9,9 +9,10 @@ if (process.env.DS_SHELL_USER_DATA) {
   app.setPath('userData', process.env.DS_SHELL_USER_DATA);
 }
 
-// 全进程唯一的设置存储句柄（initShell 返回的那一个）与托盘。
-// Task 8 复用同一 settingsStore，绝不再建第二个 store。
-let settingsStore: ReturnType<typeof initShell> | null = null;
+// 模块级只留托盘句柄：store 由 whenReady 里的局部 const 持有（whenReady 全进程只跑
+// 一次，它就是那个唯一句柄，托盘与快捷键共用，绝不再建第二个 store）。
+// R24：此前的模块级 settingsStore 自 Task 8 起只写不读（读路径全走局部 settings），
+// 死代码删除；现在 tray 在 will-quit 里被读取（destroy），不再是只写变量。
 let tray: ReturnType<typeof createTray> | null = null;
 
 // 测试钩子（brief Step 4「暴露测试钩子」）：只在 DS_SHELL_TEST_HOOKS 置位时挂载，
@@ -46,7 +47,6 @@ if (!gotLock) {
     // initShell 的返回值是全进程唯一的 store 句柄；局部 const 收窄非 null，
     // 托盘与快捷键共用同一句柄，绝不再建第二个 store。
     const settings = initShell(userDataDir());
-    settingsStore = settings;
     createShellWindow();
     // 关窗后托盘是唯一唤起入口；退出直接走 quitApp()——quitters/quitEmitted 是
     // 进程级永久闩（Task 6 交接裁决），托盘不做可取消退出，否则 before-quit +
@@ -71,7 +71,13 @@ if (!gotLock) {
         }).show();
       },
     });
-    app.on('will-quit', () => { hotkeys.dispose(); });
+    app.on('will-quit', () => {
+      hotkeys.dispose();
+      // R22：Windows 上退出前不显式销毁 Tray，通知区域会残留幽灵图标（悬停才消失）。
+      // 托盘是唯一唤起入口，退出后一个"还能点"的残留图标是明确缺陷，必须在此回收；
+      // tray.destroy() 幂等性由 null 守卫兜住（whenReady 未跑完就退出时 tray 仍是 null）。
+      tray?.destroy();
+    });
     // 托盘常驻：故意不因为窗口全部关闭而退出（hide 进托盘是主路径，
     // 这里兜住 closeToTray=false 时用户关掉最后一个窗口还想留在托盘的场景）。
     app.on('window-all-closed', () => { /* 空实现：托盘常驻，故意不因窗口关闭而退出 */ });
