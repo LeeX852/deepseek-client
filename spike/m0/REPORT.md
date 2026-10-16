@@ -31,11 +31,19 @@
    正常写入 `spike/m0/out/`；`auto-NNN.json` 里 `editable/sidebar/itemish/messages`
    在未登录态全为空数组——符合预期，说明探测选择器没有命中登录页噪声，但也意味着
    风险 2 的正式判据（会话列表/消息节点可达）必须有登录态数据才能下结论。
-4. **UA 清洗生效**：快照 `navigator.userAgent` 不含 `Electron/` 与 `ds-shell/` 标记。
-5. **日志链路打通**：`[probe] snapshot auto-00N url=...`、`[probe] insert=NO_EDITABLE`、
+4. **UA 清洗生效（与产品壳同款环境）**：不仅 `loadURL` 覆盖了页面 UA，
+   `persist:deepseek` 分区 session 也 `setUserAgent` 成清洗后的 UA，因此后续
+   XHR/worker 请求头的 `User-Agent` 同样干净。实测：分区 session `setUserAgent`
+   前 `... Electron/44.8.0 ...`，之后 `... Chrome/152.0.7977.167 Safari/537.36`；
+   快照 `navigator.userAgent` 也不含 `Electron/` 与 `ds-shell/` 标记。
+5. **日志链路打通**：`[probe] snapshot auto-00N url=...`、
    `[spike] navigate -> ...`、`[spike] in-page -> ...` 都能到达终端 stdout。
-   未登录态 `insert=NO_EDITABLE` 是预期行为（登录页输入框是 `<input>`，不在注入自测的
-   `textarea/[contenteditable]/[role=textbox]` 选择器范围内），风险 3/4 仍需登录实测。
+6. **自动循环不再破坏操作者草稿**：5 秒节拍只做快照，`[probe] insert=` 这类
+   破坏性自测日志在非手动触发时**根本不出现**。实测两轮自动快照（auto-001..004）
+   全程无 `insert=`；只有主进程收到显式 `spike:insert`（Ctrl+Shift+U）时才运行自测。
+   未登录的签名页里，即便触发也只会 `insert=NO_EDITABLE`（登录表单是 `<input>`，
+   不在注入自测的 `textarea/[contenteditable]/[role=textbox]` 选择器范围内）。
+   风险 3/4 仍需登录后用真实输入框实测。
 
 ## 未验证（必须真人登录完成）
 
@@ -50,7 +58,25 @@
 ## 运行说明（给 Step 3 执行人）
 
 - 命令：`pnpm exec electron spike/m0/main.mjs`（项目根为工作目录），产物在 `spike/m0/out/`。
-- 每 5 秒自动落一份 `auto-NNN.json/.html`，上限 240 轮（约 20 分钟）后自动停止探测；
-  30 秒起每 30 秒另有 `manual.json/.html`。登录完成后至少留一份 `manual.json` 再 Ctrl+C。
+- **快照自动、破坏性自测手动**（本轮修复的核心变化，运行前务必了解）：
+  - 每 5 秒**只自动落一份** `auto-NNN.json/.html` 快照——不写入、不聚焦、不动你的
+    输入框，可以放心边操作边让它跑。上限 240 轮（约 20 分钟）后自动停探测。
+  - 30 秒起每 30 秒再落一份 `manual.json/.html`（同样是纯快照），最多 40 次。
+  - **注入 + 合成 paste 的破坏性自测不会自动运行**。只有当你按下 **`Ctrl+Shift+U`**
+    时，主进程才会发出 `spike:insert`，probe 才对**当前第一个可编辑元素**
+    （登录后即聊天输入框）跑一次自测。
+- 关于 `Ctrl+Shift+U` 触发的那次自测——它会**碰你的输入框**，请知情后再按：
+  - 字段里若已有你正在输入的文本（非历史 `DS_SHELL_SPIKE_` 令牌），自测会**跳过**
+    并打印 `insert=SKIPPED_DIRTY`，绝不覆写你的草稿；
+  - 字段为空（或只剩历史令牌）时才会写入 `DS_SHELL_SPIKE_<时间戳>` 令牌、测
+    `persisted`，随后派发携带 `spike.png` 的合成 paste，最后**把此前的内容还原**；
+  - ⚠️ 自测运行的大约 1 秒内，输入框里会短暂出现令牌文本，且 `spike.png` 附件
+    一旦被页面接受就**不会自动移除**——测完后请确认你的草稿已回来、附件已丢弃，
+    **切勿在自测进行中点发送**，否则可能把令牌和 spike.png 一起发出去。
+- 采集风险 3/4 证据的正确姿势：先让输入框**空着**，按 `Ctrl+Shift+U`，读终端
+  `[probe] insert dispatched=... persisted=...` 与 `paste=...` 两行，再人工看页面是否出现附件缩略图。
+- 结束：直接关窗即可退出（已补 `win.on('closed')` / `window-all-closed`），
+  也可 `Ctrl+C`；关窗后不会再有"对已销毁页面每 30 秒抛异常"的残留。
 - 登录态保存在 `spike/m0/out/userdata`（partition `persist:deepseek`），重跑不必重复登录；
   要彻底重置就删该目录。
+- 登录完成后至少留一份 `manual.json`（纯快照）再结束，供 Step 4 定选择器。
