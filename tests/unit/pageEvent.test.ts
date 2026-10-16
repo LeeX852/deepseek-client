@@ -30,7 +30,21 @@ describe('pageEventSchema', () => {
     expect(pageEventSchema.safeParse({ type: 'session-list-changed', sessions }).success).toBe(false);
   });
 
+  it('拒绝短 id 里的 ../ ——路径注入靠字符白名单阻断，长度上界挡不住', () => {
+    for (const id of ['../../secret', '../a', 'a/b', 'a\\b', '..', 'id ', '.hidden']) {
+      expect(pageEventSchema.safeParse({ type: 'session-list-changed', sessions: [{ id, title: 't' }] }).success)
+        .toBe(false);
+    }
+  });
+
   it('拒绝超长 id 以阻断路径注入', () => {
     expect(pageEventSchema.safeParse({ type: 'session-list-changed', sessions: [{ id: '../../x'.repeat(20), title: 't' }] }).success).toBe(false);
+    expect(pageEventSchema.safeParse({ type: 'session-list-changed', sessions: [{ id: 'a'.repeat(65), title: 't' }] }).success).toBe(false);
+  });
+
+  it('answer-completed 的 sessionId 可选：合法字符通过，含 ../ 的拒绝', () => {
+    expect(pageEventSchema.safeParse({ type: 'answer-completed', sessionId: 'sess_01-A', preview: '结论是' }).success).toBe(true);
+    expect(pageEventSchema.safeParse({ type: 'answer-completed', sessionId: '../../secret' }).success).toBe(false);
+    expect(pageEventSchema.safeParse({ type: 'answer-completed', sessionId: 'a'.repeat(65) }).success).toBe(false);
   });
 });
