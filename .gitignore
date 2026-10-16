@@ -8,3 +8,6 @@ out/
 coverage/
 .vscode/
 *.local
+test-results/
+playwright-report/
+probe-user-data/
