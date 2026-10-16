@@ -7,6 +7,8 @@ import { DEFAULT_SETTINGS, createSettingsStore, normalizeSettings } from '../../
 // R18.2：模拟 Windows 上目标文件被瞬时占用时 renameSync 抛 EPERM。
 // 仅在开关打开时抛，其余调用透传真实 fs，避免污染本文件其它用例。
 const renameSwitch = vi.hoisted(() => ({ fail: false }));
+// R21：记录 writeFileSync 的目标路径，用来断言"发布路径上不留裸 writeFileSync(file,…)"。
+const fsCalls = vi.hoisted(() => ({ writeTargets: [] as string[] }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -16,6 +18,10 @@ vi.mock('node:fs', async (importOriginal) => {
         throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
       }
       return actual.renameSync(...args);
+    },
+    writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+      fsCalls.writeTargets.push(String(args[0]));
+      return actual.writeFileSync(...args);
     },
   };
 });
@@ -96,6 +102,31 @@ describe('createSettingsStore', () => {
     const s = createSettingsStore(d);
     expect(s.get()).toEqual(DEFAULT_SETTINGS);
     expect(JSON.parse(readFileSync(s.path(), 'utf8'))).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it('首写默认值也走 tmp+rename 原子路径：发布路径不留裸 writeFileSync(file)（R21）', () => {
+    // 缺陷版：!existsSync(file) 分支直接 writeFileSync(file, …)。写一半崩溃会留下
+    // 截断的 settings.json，下次启动把它隔离丢弃——用户设置没了，违背 R18.2 自己的
+    // tmp+rename 纪律。这里用真实 fs + 调用记录证明首写只允许打到 .tmp。
+    fsCalls.writeTargets.length = 0;
+    const s = createSettingsStore(d);
+    expect(s.get()).toEqual(DEFAULT_SETTINGS);
+    expect(existsSync(fileIn(d))).toBe(true);
+    expect(JSON.parse(readFileSync(fileIn(d), 'utf8'))).toEqual(DEFAULT_SETTINGS);
+    // 发布文件本身从未被直接写过；唯一的首写目标是 tmp。
+    expect(fsCalls.writeTargets).not.toContain(fileIn(d));
+    expect(fsCalls.writeTargets).toEqual([`${fileIn(d)}.tmp`]);
+  });
+
+  it('隔离坏文件后的补写同样走 tmp+rename（R21 覆盖隔离路径）', () => {
+    // 隔离后 existsSync(file) 为假，补写默认值必须和首启走同一条原子路径。
+    writeFileSync(fileIn(d), '{ oops');
+    fsCalls.writeTargets.length = 0;
+    const s = createSettingsStore(d);
+    expect(s.get()).toEqual(DEFAULT_SETTINGS);
+    expect(JSON.parse(readFileSync(fileIn(d), 'utf8'))).toEqual(DEFAULT_SETTINGS);
+    expect(fsCalls.writeTargets).not.toContain(fileIn(d));
+    expect(fsCalls.writeTargets).toEqual([`${fileIn(d)}.tmp`]);
   });
 
   it('set 做浅合并并落盘', () => {

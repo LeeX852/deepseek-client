@@ -21,8 +21,13 @@ let win: BrowserWindow | null = null;
 let settings: SettingsStore | null = null;
 let windowState: ReturnType<typeof createWindowStateStore> | null = null;
 let quitters = false;
-let saveTimer: NodeJS.Timeout | null = null;
+let quitEmitted = false;
 const listeners = new Set<(e: 'shown' | 'hidden' | 'quit') => void>();
+
+// Important 1：每个窗口各自一份防抖定时器。落盘与合并都必须以"事件所属的那个窗口"
+// 为参数，绝不能在触发时去读模块级 win——win 一旦被后来者覆盖，旧窗口的 hide/拖拽
+// 就会把新窗口的几何序列化进 window.json（e2e 回归"close 只隐藏自己"盯的就是这条）。
+const saveTimers = new WeakMap<BrowserWindow, NodeJS.Timeout>();
 
 function isAllowedUrl(raw: string): boolean {
   try {
@@ -33,27 +38,29 @@ function isAllowedUrl(raw: string): boolean {
   }
 }
 
-function currentBounds(): Bounds | null {
-  if (!win || win.isDestroyed()) return null;
-  const b = win.getBounds();
-  return { x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() };
+function currentBounds(w: BrowserWindow): Bounds | null {
+  if (w.isDestroyed()) return null;
+  const b = w.getBounds();
+  return { x: b.x, y: b.y, width: b.width, height: b.height, maximized: w.isMaximized() };
 }
 
-function persistBounds() {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
+function persistBounds(w: BrowserWindow) {
+  const pending = saveTimers.get(w);
+  if (pending) {
+    clearTimeout(pending);
+    saveTimers.delete(w);
   }
-  const b = currentBounds();
+  const b = currentBounds(w);
   if (b && windowState) windowState.save(b);
 }
 
-function schedulePersistBounds() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    persistBounds();
-  }, BOUNDS_SAVE_DEBOUNCE_MS);
+function schedulePersistBounds(w: BrowserWindow) {
+  const pending = saveTimers.get(w);
+  if (pending) clearTimeout(pending);
+  saveTimers.set(w, setTimeout(() => {
+    saveTimers.delete(w);
+    persistBounds(w);
+  }, BOUNDS_SAVE_DEBOUNCE_MS));
 }
 
 export function initShell(userDataDir: string): SettingsStore {
@@ -75,15 +82,15 @@ function restoredBounds(): Bounds | null {
 // （1200 → 1201/800 → 802）。该舍入映射是确定性的：按残差回补目标再设一次
 // 即可精确落到请求的逻辑尺寸（1199 → 1200）。整数缩放下第一轮即命中，零成本。
 // 循环上限 3 次，收敛失败时保留误差最小的一次，绝不无限抖动。
-function applyExactBounds(target: { x: number; y: number; width: number; height: number }): void {
-  if (!win || win.isDestroyed()) return;
+function applyExactBounds(w: BrowserWindow, target: { x: number; y: number; width: number; height: number }): void {
+  if (w.isDestroyed()) return;
   const errOf = (b: { width: number; height: number }) => Math.abs(b.width - target.width) + Math.abs(b.height - target.height);
-  let best = win.getBounds();
+  let best = w.getBounds();
   let bestErr = errOf(best);
   let next = target;
   for (let i = 0; i < 3 && bestErr > 0; i++) {
-    win.setBounds(next);
-    const got = win.getBounds();
+    w.setBounds(next);
+    const got = w.getBounds();
     const err = errOf(got);
     if (err < bestErr) {
       best = got;
@@ -127,7 +134,7 @@ export function createShellWindow(): BrowserWindow {
   // 位置保留构造函数的居中结果，只把 DPI 舍入多出的 1-2 DIP 裁掉。
   {
     const b = shellWin.getBounds();
-    applyExactBounds({
+    applyExactBounds(shellWin, {
       x: saved ? saved.x : b.x,
       y: saved ? saved.y : b.y,
       width: saved ? saved.width : DEFAULT_WIDTH,
@@ -136,6 +143,13 @@ export function createShellWindow(): BrowserWindow {
   }
 
   if (saved?.maximized) shellWin.maximize();
+
+  // Important 2：窗口创建即落一次自己的几何（同步、立即路径）。
+  // applyExactBounds/maximize 都发生在 resize/move 监听挂载之前，触发不了保存；
+  // 此前 window.json 的首次出现全靠"Windows 首显时系统自发 move"这种主机相关运气，
+  // 任何以"文件已存在"为前提的测试在别的机器上都会以与行为无关的原因死掉。
+  // 与 R18.1"设置首启即补写默认值"同一精神：状态存储永远有最后已知的良好几何。
+  persistBounds(shellWin);
 
   const ses = session.fromPartition(DEEPSEEK_PARTITION);
   ses.setUserAgent(browserLikeUA(ses.getUserAgent()));
@@ -147,16 +161,18 @@ export function createShellWindow(): BrowserWindow {
     return { action: 'deny' };
   });
 
-  shellWin.on('resize', schedulePersistBounds);
-  shellWin.on('move', schedulePersistBounds);
-  shellWin.on('maximize', persistBounds);
-  shellWin.on('unmaximize', persistBounds);
+  // Important 1：落盘类 handler 全部把"自己这个实例"传进去，与 ready-to-show/close/closed
+  // （da6b060 已绑实例）保持同一纪律。
+  shellWin.on('resize', () => schedulePersistBounds(shellWin));
+  shellWin.on('move', () => schedulePersistBounds(shellWin));
+  shellWin.on('maximize', () => persistBounds(shellWin));
+  shellWin.on('unmaximize', () => persistBounds(shellWin));
   shellWin.on('show', () => emit('shown'));
-  shellWin.on('hide', () => { persistBounds(); emit('hidden'); });
+  shellWin.on('hide', () => { persistBounds(shellWin); emit('hidden'); });
 
   shellWin.on('close', (e) => {
     if (quitters || !settings?.get().closeToTray) {
-      persistBounds();
+      persistBounds(shellWin);
       return;
     }
     e.preventDefault();
@@ -200,7 +216,13 @@ export function toggleShell(): void {
 
 export function quitApp(): void {
   quitters = true;
-  persistBounds();
-  emit('quit');
+  if (win && !win.isDestroyed()) persistBounds(win);
+  // R20：before-quit → quitApp() → app.quit() 会重入 before-quit。没有一次性广播守卫时
+  // quit 并非"两次"而是自激循环（e2e 实测一轮退出 267 次），会把幂等负担转嫁给 Task 7/8。
+  // 语义定为：quit 恰好广播一次；后续重入仍保证 quitters 落盘与 app.quit() 的幂等空转。
+  if (!quitEmitted) {
+    quitEmitted = true;
+    emit('quit');
+  }
   app.quit();
 }

@@ -89,17 +89,6 @@ export function createSettingsStore(dir: string) {
       quarantine(file);
     }
   }
-  // R18.1：文件缺席就补写默认值——既覆盖首启，也覆盖"坏文件刚被成功隔离"之后。
-  // 否则 store.path() 指向不存在的文件，Task 7 托盘菜单的"打开设置文件"会静默失败。
-  // 隔离整体失败时坏文件仍在（existsSync 为真），不覆盖用户字节，内存态用默认值。
-  if (!existsSync(file)) {
-    try {
-      writeFileSync(file, JSON.stringify(current, null, 2));
-    } catch {
-      // 目录不可写时保持内存默认值，绝不在构造期把应用拖崩。
-    }
-  }
-
   const persist = () => {
     const tmp = file + '.tmp';
     try {
@@ -115,6 +104,15 @@ export function createSettingsStore(dir: string) {
       // 瞬时锁：保留 tmp 与旧文件，下次 persist 覆盖重试。
     }
   };
+
+  // R18.1：文件缺席就补写默认值——既覆盖首启，也覆盖"坏文件刚被成功隔离"之后。
+  // 否则 store.path() 指向不存在的文件，Task 7 托盘菜单的"打开设置文件"会静默失败。
+  // 隔离整体失败时坏文件仍在（existsSync 为真），不覆盖用户字节，内存态用默认值。
+  // R21：这条首写必须走与 set() 完全相同的 tmp+rename 原子路径。原来的裸
+  // writeFileSync(file, …) 若崩在中途会留下截断的 settings.json，下次启动把
+  // "自己刚写的半截文件"连同用户原设置一起隔离丢弃——正是 R18.2 要避免的事故。
+  // persist() 自带守卫：目录不可写时保持内存默认值，绝不在构造期把应用拖崩。
+  if (!existsSync(file)) persist();
 
   return {
     get: () => current,
