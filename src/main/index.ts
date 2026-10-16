@@ -1,11 +1,17 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import { appendFileSync } from 'node:fs';
-import { createShellWindow, initShell, onShellEvent, quitApp, showOrFocusShell } from './shellWindow';
+import { createShellWindow, initShell, onShellEvent, quitApp, showOrFocusShell, toggleShell } from './shellWindow';
+import { createTray } from './tray';
 import { userDataDir } from './paths';
 
 if (process.env.DS_SHELL_USER_DATA) {
   app.setPath('userData', process.env.DS_SHELL_USER_DATA);
 }
+
+// 全进程唯一的设置存储句柄（initShell 返回的那一个）与托盘。
+// Task 8 复用同一 settingsStore，绝不再建第二个 store。
+let settingsStore: ReturnType<typeof initShell> | null = null;
+let tray: ReturnType<typeof createTray> | null = null;
 
 // 测试钩子（brief Step 4「暴露测试钩子」）：只在 DS_SHELL_TEST_HOOKS 置位时挂载，
 // 生产启动路径不留任何全局。生命周期 API 只能由主进程调用，而 e2e 必须在同一个
@@ -36,8 +42,20 @@ if (!gotLock) {
 
   // 顶层 `await app.whenReady()` 在 ESM 入口会死锁（Task 2 踩过），只能用 then。
   void app.whenReady().then(() => {
-    initShell(userDataDir());
+    settingsStore = initShell(userDataDir());
     createShellWindow();
+    // 关窗后托盘是唯一唤起入口；退出直接走 quitApp()——quitters/quitEmitted 是
+    // 进程级永久闩（Task 6 交接裁决），托盘不做可取消退出，否则 before-quit +
+    // preventDefault 会让应用活着但 close-to-tray 失效、quit 广播永不再发。
+    tray = createTray({
+      onToggle: toggleShell,
+      onShow: showOrFocusShell,
+      onSettings: () => { if (settingsStore) void shell.openPath(settingsStore.path()); },
+      onQuit: quitApp,
+    });
+    // 托盘常驻：故意不因为窗口全部关闭而退出（hide 进托盘是主路径，
+    // 这里兜住 closeToTray=false 时用户关掉最后一个窗口还想留在托盘的场景）。
+    app.on('window-all-closed', () => { /* 空实现：托盘常驻，故意不因窗口关闭而退出 */ });
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createShellWindow();
     });
