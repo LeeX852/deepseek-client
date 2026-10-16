@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-electron/
+out/
+*.log
+.DS_Store
+.venv/
+coverage/
+.vscode/
+*.local
