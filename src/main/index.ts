@@ -1,9 +1,20 @@
 import { app, BrowserWindow } from 'electron';
-import { createShellWindow, initShell, quitApp, toggleShell } from './shellWindow';
+import { createShellWindow, initShell, quitApp, showOrFocusShell, toggleShell } from './shellWindow';
 import { userDataDir } from './paths';
 
 if (process.env.DS_SHELL_USER_DATA) {
   app.setPath('userData', process.env.DS_SHELL_USER_DATA);
+}
+
+// 测试钩子（brief Step 4「暴露测试钩子」）：只在 DS_SHELL_TEST_HOOKS 置位时挂载，
+// 生产启动路径不留任何全局。生命周期 API 只能由主进程调用，而 e2e 必须在同一个
+// 同步 tick 内连续构造两个壳窗口——正常启动做不到，ready-to-show/closed 的
+// 「绑定到模块级当前窗口指针」缺陷就永远无法回归。
+if (process.env.DS_SHELL_TEST_HOOKS) {
+  (globalThis as unknown as { __dsShellTestHooks: unknown }).__dsShellTestHooks = {
+    createShellWindow,
+    showOrFocusShell,
+  };
 }
 
 // 单实例锁：重复启动不开第二个登录态，而是唤起已有窗口。

@@ -103,7 +103,12 @@ export function createShellWindow(): BrowserWindow {
   const preload = path.join(app.getAppPath(), 'out/preload/deepseek.js');
   const saved = restoredBounds();
 
-  win = new BrowserWindow({
+  // shellWin 是"本次创建的那个窗口"，win 是"当前壳窗口"。
+  // 只影响这一个窗口的 handler 必须绑定 shellWin：闭包读模块级 win 的话，
+  // 一旦后来者覆盖了指针，前一个窗口会去 show/hide 别人、并把别人降级成"没有窗口"
+  // （Task 1 遗留缺陷，三条 e2e 回归用例各盯一种表现）。
+  // 名字不叫 shell：那会遮蔽 electron 导入的 shell 模块（openExternal 要用它）。
+  const shellWin = new BrowserWindow({
     ...(saved ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height } : { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT }),
     show: false, title: 'DeepSeek',
     icon: path.join(app.getAppPath(), 'out/resources/icon.png'),
@@ -116,11 +121,12 @@ export function createShellWindow(): BrowserWindow {
       webSecurity: true, allowRunningInsecureContent: false,
     },
   });
+  win = shellWin;
 
   // 显示前归一化：恢复尺寸以 window.json 落盘值为准；默认尺寸以常量为准，
   // 位置保留构造函数的居中结果，只把 DPI 舍入多出的 1-2 DIP 裁掉。
   {
-    const b = win.getBounds();
+    const b = shellWin.getBounds();
     applyExactBounds({
       x: saved ? saved.x : b.x,
       y: saved ? saved.y : b.y,
@@ -129,37 +135,38 @@ export function createShellWindow(): BrowserWindow {
     });
   }
 
-  if (saved?.maximized) win.maximize();
+  if (saved?.maximized) shellWin.maximize();
 
   const ses = session.fromPartition(DEEPSEEK_PARTITION);
   ses.setUserAgent(browserLikeUA(ses.getUserAgent()));
 
-  win.once('ready-to-show', () => win?.show());
-  win.webContents.on('will-navigate', (e, url) => { if (!isAllowedUrl(url)) e.preventDefault(); });
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  shellWin.once('ready-to-show', () => shellWin.show());
+  shellWin.webContents.on('will-navigate', (e, url) => { if (!isAllowedUrl(url)) e.preventDefault(); });
+  shellWin.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedUrl(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  win.on('resize', schedulePersistBounds);
-  win.on('move', schedulePersistBounds);
-  win.on('maximize', persistBounds);
-  win.on('unmaximize', persistBounds);
-  win.on('show', () => emit('shown'));
-  win.on('hide', () => { persistBounds(); emit('hidden'); });
+  shellWin.on('resize', schedulePersistBounds);
+  shellWin.on('move', schedulePersistBounds);
+  shellWin.on('maximize', persistBounds);
+  shellWin.on('unmaximize', persistBounds);
+  shellWin.on('show', () => emit('shown'));
+  shellWin.on('hide', () => { persistBounds(); emit('hidden'); });
 
-  win.on('close', (e) => {
+  shellWin.on('close', (e) => {
     if (quitters || !settings?.get().closeToTray) {
       persistBounds();
       return;
     }
     e.preventDefault();
-    win?.hide();
+    shellWin.hide();
   });
-  win.on('closed', () => { win = null; });
+  // 只有当前指针仍指向自己时才降级：否则被销毁的那个窗口会把活着的窗口抹成"没有窗口"。
+  shellWin.on('closed', () => { if (win === shellWin) win = null; });
 
-  void win.loadURL(REMOTE_URL, { userAgent: browserLikeUA(session.defaultSession.getUserAgent()) });
-  return win;
+  void shellWin.loadURL(REMOTE_URL, { userAgent: browserLikeUA(session.defaultSession.getUserAgent()) });
+  return shellWin;
 }
 
 function emit(e: 'shown' | 'hidden' | 'quit') {
