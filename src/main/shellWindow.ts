@@ -4,6 +4,7 @@ import path from 'node:path';
 import { browserLikeUA } from './ua';
 import { createSettingsStore, type SettingsStore } from './settings';
 import { createWindowStateStore, sanitizeBounds, type Bounds } from './windowState';
+import { attachLoadGuards } from './overlay';
 
 export const REMOTE_URL = process.env.DS_SHELL_URL ?? 'https://chat.deepseek.com/';
 export const DEEPSEEK_PARTITION = 'persist:deepseek';
@@ -180,6 +181,10 @@ export function createShellWindow(): BrowserWindow {
   });
   // 只有当前指针仍指向自己时才降级：否则被销毁的那个窗口会把活着的窗口抹成"没有窗口"。
   shellWin.on('closed', () => { if (win === shellWin) win = null; });
+
+  // 离线/崩溃覆盖层守卫：必须在 loadURL 之前挂上，否则首个 did-fail-load 会漏掉。
+  // 传入 shellWin（本次创建的实例），与其余 handler 同一纪律。
+  attachLoadGuards(shellWin);
 
   void shellWin.loadURL(REMOTE_URL, { userAgent: browserLikeUA(session.defaultSession.getUserAgent()) });
   return shellWin;

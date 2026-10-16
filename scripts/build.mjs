@@ -20,6 +20,14 @@ await build({
   outfile: 'out/preload/deepseek.js', sourcemap: true,
 });
 
+await build({
+  entryPoints: ['src/preload/overlay.ts'],
+  bundle: true, platform: 'browser', format: 'cjs', target: 'es2022',
+  // electron 必须 external：沙箱 preload 的 require('electron') 由运行时提供，
+  // 打进 bundle 会去解析 electron 包主入口（Node-only）直接构建失败。
+  external: ['electron'], outfile: 'out/preload/overlay.js', sourcemap: true,
+});
+
 if (existsSync('src/renderer')) cpSync('src/renderer', 'out/renderer', { recursive: true });
 cpSync('resources', 'out/resources', { recursive: true });
 console.log('[build] ok');

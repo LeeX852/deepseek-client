@@ -72,11 +72,16 @@ if (!gotLock) {
       },
     });
     app.on('will-quit', () => {
-      hotkeys.dispose();
-      // R22：Windows 上退出前不显式销毁 Tray，通知区域会残留幽灵图标（悬停才消失）。
-      // 托盘是唯一唤起入口，退出后一个"还能点"的残留图标是明确缺陷，必须在此回收；
-      // tray.destroy() 幂等性由 null 守卫兜住（whenReady 未跑完就退出时 tray 仍是 null）。
-      tray?.destroy();
+      // R25：dispose 抛错不能吃掉托盘回收——否则幽灵图标缺陷复活，且 Task 9/10 还要
+      // 往这个 handler 里追加清理，隔离必须现在就好。try/finally 保证 tray.destroy 必达。
+      try {
+        hotkeys.dispose();
+      } finally {
+        // R22：Windows 上退出前不显式销毁 Tray，通知区域会残留幽灵图标（悬停才消失）。
+        // 托盘是唯一唤起入口，退出后一个"还能点"的残留图标是明确缺陷，必须在此回收；
+        // tray.destroy() 幂等性由 null 守卫兜住（whenReady 未跑完就退出时 tray 仍是 null）。
+        tray?.destroy();
+      }
     });
     // 托盘常驻：故意不因为窗口全部关闭而退出（hide 进托盘是主路径，
     // 这里兜住 closeToTray=false 时用户关掉最后一个窗口还想留在托盘的场景）。

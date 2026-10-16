@@ -1,0 +1,15 @@
+:root {
+  --bg: #f7f7f8;
+  --fg: #1f2328;
+  --muted: #6b7280;
+  --accent: #4d6bfe;
+  --border: #e3e5e8;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 "Segoe UI", system-ui, sans-serif; }
+main { max-width: 420px; margin: 0 auto; padding: 48px 24px; text-align: center; }
+h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+#reason { color: var(--muted); margin: 0 0 24px; }
+button { font: inherit; color: #fff; background: var(--accent); border: 0; border-radius: 8px; padding: 10px 20px; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.hint { color: var(--muted); font-size: 12px; margin-top: 20px; }
