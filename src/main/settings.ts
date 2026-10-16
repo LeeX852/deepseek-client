@@ -88,14 +88,32 @@ export function createSettingsStore(dir: string) {
     } catch {
       quarantine(file);
     }
-  } else {
-    writeFileSync(file, JSON.stringify(current, null, 2));
+  }
+  // R18.1：文件缺席就补写默认值——既覆盖首启，也覆盖"坏文件刚被成功隔离"之后。
+  // 否则 store.path() 指向不存在的文件，Task 7 托盘菜单的"打开设置文件"会静默失败。
+  // 隔离整体失败时坏文件仍在（existsSync 为真），不覆盖用户字节，内存态用默认值。
+  if (!existsSync(file)) {
+    try {
+      writeFileSync(file, JSON.stringify(current, null, 2));
+    } catch {
+      // 目录不可写时保持内存默认值，绝不在构造期把应用拖崩。
+    }
   }
 
   const persist = () => {
     const tmp = file + '.tmp';
-    writeFileSync(tmp, JSON.stringify(current, null, 2));
-    renameSync(tmp, file);
+    try {
+      writeFileSync(tmp, JSON.stringify(current, null, 2));
+    } catch {
+      return;
+    }
+    // R18.2：Windows 上目标被编辑器/杀软瞬时占用时 renameSync 抛 EPERM——
+    // 内存态仍是对的，吞掉这次失败等下一次 set() 重试即可，绝不上抛。
+    try {
+      renameSync(tmp, file);
+    } catch {
+      // 瞬时锁：保留 tmp 与旧文件，下次 persist 覆盖重试。
+    }
   };
 
   return {

@@ -1,8 +1,24 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createWindowStateStore, sanitizeBounds } from '../../src/main/windowState';
+
+// R18.2：模拟 Windows 上 window.json 被瞬时占用时最终 rename 抛 EPERM。
+// save() 由 resize/move 防抖后高频触发，一次锁冲突绝不能把窗口带崩。
+const renameSwitch = vi.hoisted(() => ({ fail: false }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      if (renameSwitch.fail) {
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      }
+      return actual.renameSync(...args);
+    },
+  };
+});
 
 const one = [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }];
 const two = [...one, { workArea: { x: 1920, y: 0, width: 1920, height: 1080 } }];
@@ -99,5 +115,20 @@ describe('createWindowStateStore', () => {
     expect(readFileSync(seeded, 'utf8')).toBe('PREVIOUS-QUARANTINE');
     expect(quarantined(d)).toContain('nope');
     expect(quarantined(d)).toContain('PREVIOUS-QUARANTINE');
+  });
+
+  it('最终 rename 被瞬时锁定时 save() 不抛出：锁释放后重试即可落盘', () => {
+    // R18.2：拖拽窗口时每帧都会防抖落盘，目标被编辑器/杀软瞬时占用属真实路径；
+    // 丢一帧位置无所谓，抛异常则会击穿整个主进程。
+    const d = mkdtempSync(path.join(tmpdir(), 'ds-bounds-'));
+    const s = createWindowStateStore(d);
+    renameSwitch.fail = true;
+    try {
+      expect(() => s.save({ x: 1, y: 2, width: 900, height: 700, maximized: false })).not.toThrow();
+    } finally {
+      renameSwitch.fail = false;
+    }
+    expect(() => s.save({ x: 3, y: 4, width: 800, height: 600, maximized: true })).not.toThrow();
+    expect(s.load()).toEqual({ x: 3, y: 4, width: 800, height: 600, maximized: true });
   });
 });

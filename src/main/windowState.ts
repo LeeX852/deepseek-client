@@ -71,8 +71,18 @@ export function createWindowStateStore(dir: string) {
     },
     save(b: Bounds): void {
       const tmp = file + '.tmp';
-      writeFileSync(tmp, JSON.stringify(b));
-      renameSync(tmp, file);
+      try {
+        writeFileSync(tmp, JSON.stringify(b));
+      } catch {
+        return;
+      }
+      // R18.2：resize/move 防抖后仍高频落盘，Windows 上目标瞬时被占用时
+      // renameSync 抛 EPERM——丢掉这一帧位置无关紧要，绝不能把窗口带崩。
+      try {
+        renameSync(tmp, file);
+      } catch {
+        // 瞬时锁：保留 tmp 与旧文件，下次 save 覆盖重试。
+      }
     },
   };
 }
