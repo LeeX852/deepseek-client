@@ -19,6 +19,9 @@ export const conversationMessageSchema = z.object({
 export const conversationUpdatedSchema = z.object({
   type: z.literal('conversation-updated'),
   sessionId: safeKeySchema.optional(),
+  // RW-1：observer 现在带真实侧边栏摘要标题（≤200，与 extractSessions 同口径）。
+  // 归档 title 用它，搜索/跳转据此匹配侧边栏 <a>——C-1 的承重字段。
+  title: z.string().max(200).optional(),
   messages: z.array(conversationMessageSchema).max(200),
 });
 

@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
-import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,6 +27,7 @@ document.addEventListener('click', function (e) {
 type ArchiveEvent = {
   type: 'conversation-updated';
   sessionId?: string;
+  title?: string;
   messages: Array<{ role: 'user' | 'assistant'; text: string }>;
 };
 
@@ -40,6 +41,19 @@ type ShellHooks = {
     pickSavePath?: (defaultPath: string) => Promise<string | null>;
   }) => Promise<void>;
 };
+
+// RW-4：把 fixture 以"对话页 URL"形式服务出来。RW-1 之后 observer 只在
+// location 命中 /a/chat/s/<id> 时才上报 conversation-updated；file:// 加载的
+// fixture 没有该 pathname，归档会恒空、I-5 的承重接缝测不到。这里用本地 HTTP
+// 服务把 fixture 挂在 /a/chat/s/<firstId> 下，使生产 observer 真的带上
+// sessionId+title 落归档。相对锚点点击后解析到 127.0.0.1，被 will-navigate
+// 白名单拦下，页面与 document.title 得以保留（与 file:// 时代同理）。
+function servingFixture(html: string): Server {
+  return createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(html);
+  });
+}
 
 // 本地闭合服务页（同 archive.spec）：无会话 <a>、无 .ds-message——observer
 // 零上报，归档保持真空，Ctrl+E 的空归档分支与注入写盘都不与 fixture 流量打架。
@@ -88,20 +102,31 @@ async function sendCtrlKeyPress(app: ElectronApplication, target: KeyTarget, key
   }, { target, keyCode });
 }
 
-test('M3 装配端到端：真实 store 归档 fixture 对话，搜索窗发起跳转，壳内按标题点击', async () => {
-  const pageDir = mkdtempSync(path.join(tmpdir(), 'ds-jump-page-'));
-  const userData = mkdtempSync(path.join(tmpdir(), 'ds-jump-user-'));
-  const page = path.join(pageDir, 'logged-in.html');
-  copyFileSync(path.join(repoRoot, 'tests/fixtures/logged-in.html'), page);
-  appendFileSync(page, RECORDER, 'utf8');
+test('M3 装配端到端：observer 带真 sessionId+title 落归档，搜索用【归档标题】跳转', async () => {
+  // 合成一个最小"对话页"：两条会话 <a>（ds-focus-ring+标题）、一用户一助手消息、输入框。
+  // 用合成页而非真实 fixture——真实 fixture 经 http 服务时其内嵌 CDN 脚本会启动 React
+  // 清空静态 DOM（file:// 时代不触发）；选择器契约另由 selectors-contract.test.ts 对真实 fixture 钉。
+  const SESSION_ID = 'e2esess0001';
+  const SESSION_TITLE = 'e2e 我的会话标题';
+  const page = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>
+    <a href="/a/chat/s/${SESSION_ID}"><div class="ds-focus-ring"></div><div>${SESSION_TITLE}</div></a>
+    <a href="/a/chat/s/other0002"><div class="ds-focus-ring"></div><div>另一个会话</div></a>
+    <div class="ds-message"><div>你好</div></div>
+    <div class="ds-message"><div class="ds-assistant-message-main-content"><p>你好！很高兴见到你。</p></div></div>
+    <textarea></textarea>
+  </body></html>` + RECORDER;
 
+  // RW-4：以对话页 URL 服务，使生产 observer 的 location 命中 /a/chat/s/<id>。
+  const srv = servingFixture(page);
+  const base = await listenOnFreePort(srv);
+  const userData = mkdtempSync(path.join(tmpdir(), 'ds-jump-user-'));
   const app = await electron.launch({
     args: ['.'], cwd: repoRoot,
     env: {
       ...process.env,
       DS_SHELL_TEST_HOOKS: '1',
       DS_SHELL_USER_DATA: userData,
-      DS_SHELL_URL: 'file://' + page.replace(/\\/g, '/'),
+      DS_SHELL_URL: base + 'a/chat/s/' + SESSION_ID,
     },
   });
   try {
@@ -111,22 +136,17 @@ test('M3 装配端到端：真实 store 归档 fixture 对话，搜索窗发起�
       .poll(() => shellWin.evaluate(() => document.querySelectorAll('a[href*="/a/chat/s/"]').length), { timeout: 15_000 })
       .toBeGreaterThan(0);
 
-    // 跳转目标从真实 fixture DOM 现场取第一条会话标题——与 preload 的取法一致，
-    // 不把 fixture 内容硬编码进测试（fixture 换版不假失败）。
-    const title = await shellWin.evaluate(() => {
-      const a = document.querySelector('a[href*="/a/chat/s/"]');
-      if (!a) return '';
-      return ((a.querySelector('.ds-focus-ring + div') || a).textContent || '').replace(/\s+/g, ' ').trim();
-    });
-    expect(title).toBeTruthy();
-
-    // 归档接线（M3 的另一半，Task 7 装配的核心断言）：fixture 里的 .ds-message
-    // → preload observer conversation-updated → 真实 registerPageEvents.onEvent
-    // → 真实 createArchiveStore 落盘 userData/archive/*.json。
+    // 生产 observer(conversation-updated 带 sessionId+title) → pageEvents → 真实 store 落盘。
     const archiveDir = path.join(userData, 'archive');
     await expect
-      .poll(() => (readdirSync(archiveDir).filter(f => f.endsWith('.json')).length), { timeout: 30_000 })
+      .poll(() => readdirSync(archiveDir).filter((f) => f.endsWith('.json')).length, { timeout: 30_000 })
       .toBeGreaterThan(0);
+
+    // 承重前提（I-5 修复）：归档记录的 id/title 必须等于真实会话 id 与侧边栏标题。
+    const recFile = readdirSync(archiveDir).find((f) => f.endsWith('.json'))!;
+    const rec = JSON.parse(readFileSync(path.join(archiveDir, recFile), 'utf8')) as { id: string; title: string };
+    expect(rec.id).toBe(SESSION_ID);
+    expect(rec.title).toBe(SESSION_TITLE);
 
     // 用生产装配实例开真实搜索窗（index.ts 的 Ctrl+K 走的是同一个 openSearch）。
     const searchWinReady = app.waitForEvent('window', { timeout: 30_000 });
@@ -138,31 +158,30 @@ test('M3 装配端到端：真实 store 归档 fixture 对话，搜索窗发起�
     const searchWin = await searchWinReady;
     await searchWin.waitForLoadState('domcontentloaded');
 
-    // 从搜索页 preload 发起跳转：searchApi.jump → IPC.SEARCH_JUMP → 主进程
-    // jumpToSession（唤起壳 + IPC.JUMP_TO_SESSION + 关搜索窗）→ 壳 preload
-    // clickSessionByTitle → 真实 <a>.click()。
+    // 跳转用【归档记录里的 title】（不再从 DOM 现取）——证明"归档标题==侧边栏标题"
+    // 这条承重链真的成立：searchApi.jump → SEARCH_JUMP → jumpToSession →
+    // 壳 preload clickSessionByTitle → 真实 <a>.click()。
     await searchWin.evaluate((t: string) => {
       (window as unknown as { searchApi: { jump(title: string): void } }).searchApi.jump(t);
-    }, title);
+    }, rec.title);
 
     // 壳页记录器必须看到匹配标题的 <a> 被点击（跳转真的落在页面里，不是空发 IPC）。
     await expect
       .poll(() => shellWin.evaluate(() => document.title), { timeout: 20_000 })
-      .toBe('CLICKED::' + title);
+      .toBe('CLICKED::' + SESSION_TITLE);
 
     // 交接 D：jumpToSession 必须关掉搜索窗，不留悬空面板。
     await expect
       .poll(
         () => app.evaluate(({ BrowserWindow }) =>
-          BrowserWindow.getAllWindows().filter(w => w.webContents.getURL().includes('renderer/search')).length),
+          BrowserWindow.getAllWindows().filter((w) => w.webContents.getURL().includes('renderer/search')).length),
         { timeout: 10_000 },
       )
       .toBe(0);
   } finally {
     await app.close().catch(() => undefined);
-    for (const dir of [pageDir, userData]) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
-    }
+    srv.close();
+    try { rmSync(userData, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
   }
 });
 
@@ -272,6 +291,8 @@ test('Ctrl/Cmd+E 按键分支与导出写路径：真实胶水落盘 Markdown（
       if (!store) throw new Error('真实归档 store 未就绪（装配在 whenReady 里没跑到？）');
       store.upsert({
         type: 'conversation-updated',
+        sessionId: 'e2eexport0001',
+        title: p.title,
         messages: [
           { role: 'user', text: p.title },
           { role: 'assistant', text: p.answer },

@@ -103,8 +103,13 @@ describe('createExportAction（Task 7 交接 A：Ctrl/Cmd+E 导出链路）', ()
     const dir = mkdtempSync(path.join(tmpdir(), 'ds-export-unit-'));
     try {
       const store = createArchiveStore(dir);
+      // RW-2：归档键改为真 sessionId，标题取 ev.title（真实侧边栏摘要）。导出用的
+      // 就是这份标题，故这里显式带上 sessionId + title（旧版靠"首条用户消息"派生
+      // 标题的路径已删除）。
       store.upsert({
         type: 'conversation-updated',
+        sessionId: 'export-sess',
+        title: '导出会话标题',
         messages: [
           { role: 'user', text: '导出会话标题' },
           { role: 'assistant', text: '导出回答正文' },

@@ -23,7 +23,14 @@ export function buildPageEventHandler(deps: {
     // 只接受远端窗口当前 webContents 的上报；id 每次现取，窗口重载后仍跟手。
     if (source.sender.id !== deps.expectedId()) return;
     const parsed = pageEventSchema.safeParse(source.payload);
-    if (parsed.success) deps.onEvent(parsed.data);
+    if (!parsed.success) return;
+    // I-1（spec §8）：下游 onEvent 会触达归档落盘等 fs 操作。任何一次处理抛错都
+    // 绝不能冒到 ipcMain 监听器把主进程打死——记日志后吞掉，聊天与后续事件照常。
+    try {
+      deps.onEvent(parsed.data);
+    } catch (err) {
+      console.error('[ds-shell] page-event 处理抛错（已隔离，主进程不受影响）:', err);
+    }
   };
 }
 

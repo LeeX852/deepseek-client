@@ -110,18 +110,27 @@ export function createObserver(opts: {
         emit({ type: 'answer-completed', preview });
       }
     },
-    // Plan 3 Task 2：把当前可见对话上报给归档侧。内容键去重——DOM 每有 mutation
-    // 防抖 tick 都会调到这里，但只有（截断后的）消息序列真正变了才 emit。
-    // sessionId 省略：M2 的 observer 无稳定"当前会话高亮"判据，绝不猜造；
-    // 归档键由 Task 3 用首条用户消息在归档侧派生（Plan 3 裁决）。
+    // Plan 3 Task 2 / 返工 RW-1：把当前可见对话上报给归档侧。内容键去重——DOM 每有
+    // mutation 防抖 tick 都会调到这里，但只有（截断后的）消息序列真正变了才 emit。
+    // 归档键用真 sessionId：idFromHref(location.href) 在对话页命中 /a/chat/s/<id>；
+    // 非对话页（落地页/新会话）无稳定 id → 直接不 emit。全终审 C-1/C-2/C-3 的根因
+    // 就是旧版省略 sessionId、由归档侧从"首条用户消息"派生键——DeepSeek 侧边栏标题
+    // 是自动摘要，与消息正文永不相等，且 CJK 首句会塌成下划线串互相撞键。真 id +
+    // 真 title（取自 extractSessions 的侧边栏摘要）从源头消掉这三条缺陷。
     conversationUpdated() {
       if (degraded) return;
+      const sessionId = idFromHref(doc.location.href);
+      // 不在对话页 → 不归档（没有可锚定的真 id，绝不猜造、也不塌 untitled）。
+      if (!sessionId) return;
       const messages = extractConversation(doc).slice(-CONVERSATION_EMIT_MAX);
       if (!messages.length) return;
       const key = messages.map(m => `${m.role}\u0000${m.text}`).join('\u0001');
       if (key === lastConversationKey) return;
       lastConversationKey = key;
-      emit({ type: 'conversation-updated', messages });
+      // 真实侧边栏标题：从 extractSessions 找 id===sessionId 的那条；找不到则省略 title，
+      // 归档侧回退为 id（绝不回退成消息正文——那正是 C-1 的来源）。
+      const title = extractSessions(doc).find(s => s.id === sessionId)?.title;
+      emit({ type: 'conversation-updated', sessionId, ...(title ? { title } : {}), messages });
     },
   };
 }

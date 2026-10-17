@@ -152,7 +152,15 @@ if (!gotLock) {
     const settings = initShell(userDataDir());
     createShellWindow();
     // M3 归档落盘：userData/archive/<key>.json，供 Ctrl+K 搜索与 Ctrl+E 导出。
-    archive = createArchiveStore(userDataDir());
+    // I-1：构造（内含 mkdirSync）失败绝不能让 whenReady 抛出——那会跳过后面的 tray/
+    // hotkeys/pageEvents 装配，留下一个"无托盘、无快捷键、消息管线全断"的残壳。降级为
+    // 无归档即可：搜索/导出/落盘各自走 archive=null 的空转分支，聊天主体照常可用。
+    try {
+      archive = createArchiveStore(userDataDir());
+    } catch (err) {
+      archive = null;
+      console.error('[ds-shell] 归档 store 初始化失败，已降级为无归档模式（搜索/导出空转，不影响聊天）:', err);
+    }
     // 关窗后托盘是唯一唤起入口；退出直接走 quitApp()——quitters/quitEmitted 是
     // 进程级永久闩（Task 6 交接裁决），托盘不做可取消退出，否则 before-quit +
     // preventDefault 会让应用活着但 close-to-tray 失效、quit 广播永不再发。
@@ -187,7 +195,15 @@ if (!gotLock) {
         notifier(e);
         // M3 归档接线（不重复注册 registerPageEvents，只在既有 onEvent 里加分支）：
         // 只有 conversation-updated 值得落盘，其余事件类型归通知管线。
-        if (e.type === 'conversation-updated') archive?.upsert(e);
+        // I-1：store 自身已把每次写包在 try/catch 里（RW-2），这里再兜一层是纵深防御
+        // （spec §8）——归档绝不能让异常冒到 ipcMain 监听器把主进程打死。
+        if (e.type === 'conversation-updated' && archive) {
+          try {
+            archive.upsert(e);
+          } catch (err) {
+            console.error('[ds-shell] 归档写入失败（已忽略，不影响消息管线）:', err);
+          }
+        }
         if (process.env.DS_SHELL_TEST_HOOKS) {
           const g = globalThis as unknown as { __dsPageEventCount?: number; __dsPageEventTypes?: string[] };
           g.__dsPageEventCount = (g.__dsPageEventCount ?? 0) + 1;
