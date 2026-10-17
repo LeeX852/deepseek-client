@@ -1,0 +1,14 @@
+appId: dev.dsshell.app
+productName: DeepSeek Shell
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - out/**
+  - package.json
+win:
+  target:
+    - portable
+  icon: resources/icon.png
+portable:
+  artifactName: "${productName} ${version}-portable-win-x64.exe"
