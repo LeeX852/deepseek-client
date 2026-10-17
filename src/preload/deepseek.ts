@@ -24,6 +24,7 @@ function schedule() {
     scheduled = false;
     observer.tick();
     observer.answerCompleted();
+    observer.conversationUpdated();
     if (observer.isDegraded()) ipcRenderer.send(IPC.OBSERVER_DEGRADED);
   }, 500);
 }

@@ -31,6 +31,11 @@ export function extractLatestAnswerPreview(doc: Document): string | null {
   return text ? text.slice(0, 300) : null;
 }
 
+// 上报上限：必须与 pageEvent.ts conversationUpdatedSchema 的 messages.max(200) 对齐。
+// extractConversation 不设条数上限，超限事件会被主进程 safeParse 整条拒掉、
+// 静默丢归档，所以 emit 前必须先截断（保留最后 200 条 = 最新的对话窗口）。
+const CONVERSATION_EMIT_MAX = 200;
+
 export function createObserver(opts: {
   doc: Document;
   emit(e: PageEvent): void;
@@ -44,6 +49,7 @@ export function createObserver(opts: {
   const readPreview = opts.readPreview ?? (() => extractLatestAnswerPreview(doc));
   let lastSessionKey = '';
   let lastSignedIn: boolean | null = null;
+  let lastConversationKey = '';
   let prevPreview: string | null = null;
   let emittedPreview: string | null = null;
   let emptyRounds = 0;
@@ -88,6 +94,19 @@ export function createObserver(opts: {
         emittedPreview = preview;
         emit({ type: 'answer-completed', preview });
       }
+    },
+    // Plan 3 Task 2：把当前可见对话上报给归档侧。内容键去重——DOM 每有 mutation
+    // 防抖 tick 都会调到这里，但只有（截断后的）消息序列真正变了才 emit。
+    // sessionId 省略：M2 的 observer 无稳定"当前会话高亮"判据，绝不猜造；
+    // 归档键由 Task 3 用首条用户消息在归档侧派生（Plan 3 裁决）。
+    conversationUpdated() {
+      if (degraded) return;
+      const messages = extractConversation(doc).slice(-CONVERSATION_EMIT_MAX);
+      if (!messages.length) return;
+      const key = messages.map(m => `${m.role}\u0000${m.text}`).join('\u0001');
+      if (key === lastConversationKey) return;
+      lastConversationKey = key;
+      emit({ type: 'conversation-updated', messages });
     },
   };
 }
