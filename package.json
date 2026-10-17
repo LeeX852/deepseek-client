@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "pnpm build && playwright test",
+    "test:e2e:live": "pnpm build && playwright test --grep @live",
     "icon": "node scripts/make-icon.mjs"
   },
   "packageManager": "pnpm@10.15.1",
