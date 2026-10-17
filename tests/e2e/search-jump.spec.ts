@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sendCtrlKeyPress, waitForFixtureReady } from './helpers';
+import { fixtureUrlWithoutCdn, sendCtrlKeyPress, waitForFixtureReady } from './helpers';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -169,14 +169,15 @@ test('M3 装配端到端：observer 带真 sessionId+title 落归档，搜索用
 // 证明过滤把非登录分区窗口排除在外）也不产生新搜索窗。
 test('Ctrl/Cmd+K 真实按键路径：壳窗口 keydown 开出搜索窗；搜索窗内再按不拦截不再开', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'ds-keyk-user-'));
-  const fixture = path.join(repoRoot, 'tests/fixtures/logged-in.html');
+  // Task 6b：走剥掉 CDN 外链的 fixture（子资源失败会清空 body），断言不变。
+  const fixtureUrl = fixtureUrlWithoutCdn();
   const app = await electron.launch({
     args: ['.'], cwd: repoRoot,
     env: {
       ...process.env,
       DS_SHELL_TEST_HOOKS: '1',
       DS_SHELL_USER_DATA: userData,
-      DS_SHELL_URL: 'file://' + fixture.replace(/\\/g, '/'),
+      DS_SHELL_URL: fixtureUrl,
     },
   });
   try {

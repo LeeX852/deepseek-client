@@ -1,8 +1,9 @@
 import { test, expect, _electron as electron } from '@playwright/test';
-import { copyFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fixtureUrlWithoutCdn } from './helpers';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -32,10 +33,9 @@ async function launchShell(url: string) {
 // registerPageEvents 收到并通过测试钩子记账。断言事件"类型"而不只是计数——
 // 只有 auth-state-changed 也能把计数推过 0，钉死 session-list-changed 才算打通。
 test('observer 从登录态 DOM 上报 session-list-changed', async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'ds-pe-page-'));
-  const page = path.join(dir, 'index.html');
-  copyFileSync(path.join(repoRoot, 'tests/fixtures/logged-in.html'), page);
-  const { app } = await launchShell('file://' + page.replace(/\\/g, '/'));
+  // Task 6b：走剥掉 CDN 外链的 fixture（子资源失败会 replaceChildren 清空 body，
+  // 与 observer 抢 DOM）；断言不变。
+  const { app } = await launchShell(fixtureUrlWithoutCdn());
   await expect
     .poll(
       async () =>

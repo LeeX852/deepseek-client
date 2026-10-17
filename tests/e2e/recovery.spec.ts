@@ -1,9 +1,9 @@
 import { test, expect, _electron as electron } from '@playwright/test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { waitForFixtureReady } from './helpers';
+import { fixtureUrlWithoutCdn, waitForFixtureReady } from './helpers';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -14,20 +14,16 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 // 构造的测试钩子），不是直接挂 globalThis，取值必须经这一层。
 test('降级可恢复：改版页降级后，会话 DOM 回来即清主进程降级态', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'ds-rec-'));
-  const page = path.join(dir, 'index.html');
-  // 用登录态 fixture 的真实 DOM（textarea + 侧边栏会话锚点），但剥掉它自带的
-  // CDN <script>/<link>：脚本加载失败时 fixture 的 _sriCk onerror 处理器会
-  // replaceChildren 清空 body，与 observer 抢 DOM、把用例变成网络竞态。
-  // observer 只关心 DOM 结构，去掉外链后行为确定。
-  const raw = readFileSync(path.join(repoRoot, 'tests/fixtures/logged-in.html'), 'utf8');
-  writeFileSync(page, raw.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').replace(/<link\b[^>]*>/gi, ''));
+  // Task 6b：登录态 fixture 的真实 DOM（textarea + 侧边栏会话锚点），CDN <script>/<link>
+  // 剥掉后写进临时目录——剥法移入 helpers.fixtureUrlWithoutCdn（原为此处内联正则）。
+  const url = fixtureUrlWithoutCdn();
   const app = await electron.launch({
     args: ['.'], cwd: repoRoot,
     env: {
       ...process.env,
       DS_SHELL_TEST_HOOKS: '1',
       DS_SHELL_USER_DATA: dir,
-      DS_SHELL_URL: 'file://' + page.replace(/\\/g, '/'),
+      DS_SHELL_URL: url,
     },
   });
   try {

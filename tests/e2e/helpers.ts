@@ -1,4 +1,10 @@
 import type { ElectronApplication, Page } from '@playwright/test';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 // 真实按键驱动：向目标窗口的 webContents 发浏览器进程级输入事件。Task 6 从
 // search-jump.spec 并入此处（单一事实源，Ctrl+K/Ctrl+E/Ctrl+O 三处共用）。
@@ -22,6 +28,19 @@ export async function sendCtrlKeyPress(app: ElectronApplication, target: KeyTarg
     wc.sendInputEvent({ type: 'keyDown', keyCode: p.keyCode, modifiers: ['control'] });
     wc.sendInputEvent({ type: 'keyUp', keyCode: p.keyCode, modifiers: ['control'] });
   }, { target, keyCode });
+}
+
+// Task 6b：把登录态 fixture 的 CDN <script>/<link> 剥掉后写进临时目录，返回 file:// URL。
+// fixture 自带 <script onerror="_sriCk(this)"> 会在任意外链失败时 replaceChildren 清空
+// body——一次子资源失败就把 observer 的输入（textarea + 会话锚点）抹掉，用例变成网络
+// 竞态（Task 2 报告的 __dsPageEventCount 卡 0 即此）。剥法沿用 recovery.spec 既定口径：
+// <script> 带内容、<link> 自闭合；静态 DOM 原样保留，waitForFixtureReady 仍成立。
+export function fixtureUrlWithoutCdn(): string {
+  const raw = readFileSync(path.join(repoRoot, 'tests/fixtures/logged-in.html'), 'utf8');
+  const stripped = raw.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').replace(/<link\b[^>]*>/gi, '');
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'ds-fixture-')), 'index.html');
+  writeFileSync(file, stripped);
+  return 'file://' + file.replace(/\\/g, '/');
 }
 
 // file:// / http fixture 就绪等待（Task 5 Step 1）。裸轮询「锚点数 > 0」有两个问题：
