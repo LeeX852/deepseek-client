@@ -63,7 +63,12 @@ export function createObserver(opts: {
   const threshold = opts.degradeThreshold ?? 3;
   const readPreview = opts.readPreview ?? (() => extractLatestAnswerPreview(doc));
   let lastSessionKey = '';
-  let lastSignedIn: boolean | null = null;
+  // 初值取 false（未登录）而非 null：auth-state-changed 只在「真正跃迁」时发出。
+  // 若初值为 null，未登录用户的首轮、或已登录用户 SPA 尚未水合 textarea 的首轮
+  // （signedIn===false）都会命中 false !== null 而发出 auth(false)，被通知侧翻成
+  // 每次启动都弹的「登录已过期」。初值 false 后：首轮未登录不发、首轮已登录发
+  // auth(true)、后续已登录→登出（true→false）仍发 auth(false)（登出通知不受影响）。
+  let lastSignedIn: boolean | null = false;
   let lastConversationKey = '';
   let prevPreview: string | null = null;
   let emittedPreview: string | null = null;

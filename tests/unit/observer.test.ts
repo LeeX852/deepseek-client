@@ -123,6 +123,16 @@ describe('createObserver().answerCompleted 稳定后才上报', () => {
 // 「空轮→降级」早返回，auth-state-changed(false) 永远发不出去，托盘/通知侧
 // 再也收不到登出信号。登出事件必须优先于降级判定发出。
 describe('createObserver().tick 登出通知与上限', () => {
+  it('首轮就是登出/空 DOM 时不发 auth-state-changed（消除启动误报）', () => {
+    const ev: PageEvent[] = [];
+    // lastSignedIn 初值为 false：未登录首屏、或已登录但 SPA 尚未水合 textarea 的首轮
+    // （signedIn 都是 false），false !== false 不成立 → 绝不发 auth(false)，
+    // 通知侧不会在每次启动弹一条假的「登录已过期」。
+    const o = createObserver({ doc: html(''), emit: e => ev.push(e) });
+    o.tick();
+    expect(ev.some(e => e.type === 'auth-state-changed')).toBe(false);
+  });
+
   it('登出（曾登录→空页）先发 auth-state-changed(false) 再降级', () => {
     const d = html(SIGNED_IN);
     const ev: PageEvent[] = [];
@@ -131,7 +141,11 @@ describe('createObserver().tick 登出通知与上限', () => {
     ev.length = 0;
     d.body.innerHTML = ''; // 模拟登出：无 textarea、无会话
     o.tick();
+    // 真实的 true→false 跃迁仍必须发出登出通知（初值 false 不会吃掉它）……
     expect(ev.some(e => e.type === 'auth-state-changed' && (e as { signedIn: boolean }).signedIn === false)).toBe(true);
+    // ……且是在「空轮→降级」早返回之前发出的：同一轮 tick 之后已置为降级，
+    // 证明 auth 事件确实在降级判定前发出、而非仅存在。
+    expect(o.isDegraded()).toBe(true);
   });
 
   it('>500 会话被截断到 500', () => {
