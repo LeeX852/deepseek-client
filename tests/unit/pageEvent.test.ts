@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { injectTextSchema, pageEventSchema } from '../../src/shared/pageEvent';
+import { injectTextSchema, jumpPayloadSchema, pageEventSchema } from '../../src/shared/pageEvent';
 
 describe('pageEventSchema', () => {
   it('接受会话列表事件', () => {
@@ -58,5 +58,19 @@ describe('injectTextSchema', () => {
   });
   it('拒绝超过 512KB 的文本（与文件注入上限一致）', () => {
     expect(injectTextSchema.safeParse({ text: 'x'.repeat(524_289) }).success).toBe(false);
+  });
+});
+
+describe('jumpPayloadSchema', () => {
+  it('接受 {title:"x"}', () => {
+    expect(jumpPayloadSchema.safeParse({ title: 'x' }).success).toBe(true);
+  });
+  it('拒绝空 title', () => {
+    // 空串是"没有会话名"，跳转无意义；min(1) 与 max(200) 都只是把点击 <a> 的
+    // 匹配输入收在上界里，不做任何 DOM/路径拼接。
+    expect(jumpPayloadSchema.safeParse({ title: '' }).success).toBe(false);
+  });
+  it('拒绝非字符串 title', () => {
+    expect(jumpPayloadSchema.safeParse({ title: 123 }).success).toBe(false);
   });
 });

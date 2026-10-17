@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/ipc';
-import { injectTextSchema } from '../shared/pageEvent';
+import { injectTextSchema, jumpPayloadSchema } from '../shared/pageEvent';
 import { SELECTORS } from './selectors';
 import { clickSessionByTitle, createObserver } from './observer';
 
@@ -64,9 +64,10 @@ ipcRenderer.on(IPC.INJECT_TEXT, (_e, payload) => injectText(payload));
 // 让 SPA 走自己的路由；标题不存在时 clickSessionByTitle 返回 false，静默不动作。
 // Task 7 交接 B：负载来自 IPC，是不可信 unknown——title 必须是真字符串才进匹配，
 // 杜绝 {title:{}} 之类的畸形负载把非字符串塞进 DOM 查询。
+// Plan 4 Task 4：手判 typeof 收敛到 jumpPayloadSchema（单一事实源），空串/超长/非串一并以 schema 拒。
 ipcRenderer.on(IPC.JUMP_TO_SESSION, (_e, arg) => {
-  const title = (arg as { title?: unknown })?.title;
-  if (typeof title === 'string' && title) clickSessionByTitle(document, title);
+  const parsed = jumpPayloadSchema.safeParse(arg);
+  if (parsed.success) clickSessionByTitle(document, parsed.data.title);
 });
 
 contextBridge.exposeInMainWorld('__dsShellPreload', { version: 1 });

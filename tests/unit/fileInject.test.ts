@@ -36,4 +36,12 @@ describe('prepareFileInject', () => {
     const r = prepareFileInject(tmp('c.txt', 'content here'));
     expect(r.ok).toBe(true);
   });
+  it('文件内容加引用块开销后超 512KB → too-large', () => {
+    // 恰好 524288 字节 ASCII：readTextFileCapped 的 size>512KB 单独判不出来，
+    // 但 buildQuoteBlock 补上围栏与文件名后的 byteLength 会越过 injectTextSchema
+    // 的 max(524288)。前者只算内容、不算组合开销——正是本任务要堵的洞：不合格
+    // payload 绝不能出门（否则被 preload 静默丢弃，用户看到"什么都没发生"）。
+    const r = prepareFileInject(tmp('big.txt', 'x'.repeat(524288)));
+    expect(r).toEqual({ ok: false, reason: 'too-large' });
+  });
 });

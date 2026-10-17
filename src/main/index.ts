@@ -9,6 +9,7 @@ import { performQuickAsk } from './quickAsk';
 import { createArchiveStore, type ArchiveStore } from './archive/store';
 import { createExportAction, type ExportActionDeps } from './archive/exportAction';
 import { closeSearchWindow, openSearchWindow } from './search';
+import { prepareFileInject } from './fileInject';
 import { IPC } from '../shared/ipc';
 import { userDataDir } from './paths';
 
@@ -69,11 +70,16 @@ let archive: ArchiveStore | null = null;
 // wc.isLoading() 为真时把注入延到 did-finish-load 一次，等 preload 装好再发。
 const jumpToSession = (title: string): void => {
   showOrFocusShell();
+  // R-Q：先关搜索窗再取 wc。showOrFocusShell 同步建窗并置 win，故下面的早返回
+  // 实际不可达；但把 closeSearchWindow 提上来消掉这份脆弱——否则一旦该前提变化，
+  // 搜索面板会悬空（R25/Plan 3 一直在防的那类）。
+  closeSearchWindow();
   const wc = getShellWindow()?.webContents;
   if (!wc) return;
-  const send = () => wc.send(IPC.JUMP_TO_SESSION, { title });
+  // R-R：延后的 send 复查 isDestroyed——窗口在 did-finish-load 前死掉时不至于对
+  // 已回收的 webContents 发送。
+  const send = () => { if (!wc.isDestroyed()) wc.send(IPC.JUMP_TO_SESSION, { title }); };
   if (wc.isLoading()) wc.once('did-finish-load', send); else send();
-  closeSearchWindow();
 };
 
 // Ctrl/Cmd+K 的真实入口：搜索窗与归档 store 共用装配点实例（生产路径唯一句柄）。
@@ -115,6 +121,59 @@ const exportDeps: ExportActionDeps = {
 const exportRecentSession = (overrides?: Partial<ExportActionDeps>): Promise<void> =>
   createExportAction({ ...exportDeps, ...overrides })();
 
+// Plan 4 Task 4：Ctrl/Cmd+O 把本地文本文件作为引用块注入远端输入框。与 Ctrl+E 同一
+// 注入惯例（I-3）：胶水声明成 fileInjectDeps、injectLocalFile 收可选 overrides——
+// 生产按键路径不带 overrides，走真实 dialog.showOpenDialog；e2e 注入假 pickOpenPath
+// 覆盖原生打开框（原生框在主进程里无法自动化），其余（prepareFileInject、发送、通知）
+// 全是生产线，e2e 驱动的就是用户按键会走到的那条。
+type FileInjectDeps = {
+  pickOpenPath: () => Promise<string | null>;
+};
+const fileInjectDeps: FileInjectDeps = {
+  pickOpenPath: async () => {
+    // 只收文本类扩展名：注入的是纯文本引用块，二进制/图片在这里先挡一道（内容本身
+    // 不按 HTML/路径解释——readTextFileCapped/buildQuoteBlock 只做纯文本包装与围栏）。
+    const options = {
+      properties: ['openFile' as const],
+      filters: [{ name: '文本', extensions: ['txt', 'md', 'json', 'csv', 'log', 'ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'c', 'cpp', 'h', 'sh', 'yml', 'yaml', 'xml', 'html', 'css', 'sql', 'toml', 'ini'] }],
+    };
+    // 有壳窗口时打开框挂到壳上（父窗口模态）；无壳走无参重载。取消时 filePaths 为空，
+    // 一律归一为 null（取消即整体放弃，不通知）。
+    const parent = getShellWindow();
+    const result = parent
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options);
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  },
+};
+
+// 与 exportDeps.notify 同一纪律：钩子置位时先在主进程记一笔，e2e 才能观测到
+// 「文件过大有反馈」这条验收的反馈面。
+const notifyInject = (title: string, body: string): void => {
+  if (process.env.DS_SHELL_TEST_HOOKS) {
+    const g = globalThis as unknown as { __dsInjectNotices?: Array<{ title: string; body: string }> };
+    (g.__dsInjectNotices ??= []).push({ title, body });
+  }
+  new Notification({ title, body }).show();
+};
+
+const injectLocalFile = async (overrides?: Partial<FileInjectDeps>): Promise<void> => {
+  // R-L：原生打开框在 hide 到托盘的窗口上可能不可见——弹框之前先唤起（Finding I-3
+  // 在划词提问上踩过的同一类缺陷；quickAsk 那句 showOrFocusShell 同理，别删）。
+  showOrFocusShell();
+  const filePath = await (overrides?.pickOpenPath ?? fileInjectDeps.pickOpenPath)();
+  if (!filePath) return; // 用户取消
+  const r = prepareFileInject(filePath);
+  if (!r.ok) {
+    // 不合格 payload 绝不发出（否则被 preload 静默丢弃，用户看到"什么都没发生"）：
+    // 改为明确反馈。too-large 按 spec 措辞提示改用拖放。
+    const tooLarge = r.reason === 'too-large';
+    notifyInject(tooLarge ? '文件过大' : '读取失败', tooLarge ? '文件过大，请改用拖放' : '无法读取所选文件');
+    return;
+  }
+  getShellWindow()?.webContents.send(IPC.INJECT_TEXT, { text: r.payload });
+};
+
 // 测试钩子（brief Step 4「暴露测试钩子」）：只在 DS_SHELL_TEST_HOOKS 置位时挂载，
 // 生产启动路径不留任何全局。生命周期 API 只能由主进程调用，而 e2e 必须在同一个
 // 同步 tick 内连续构造两个壳窗口——正常启动做不到，ready-to-show/closed 的
@@ -144,6 +203,9 @@ if (process.env.DS_SHELL_TEST_HOOKS) {
     // will-quit 调用；e2e 要能单独触发它、再观测「摘掉监听器后 PAGE_EVENT 不再进主进程」，
     // 故把同一句柄的 dispose 露出来（R-E）。
     disposePageEvents: () => pageEvents?.dispose(),
+    // Plan 4 Task 4：Ctrl+O 注入的生产入口。原生打开框无法自动化，e2e 注入假
+    // pickOpenPath 驱动其余全链（与 exportRecentSession 的 overrides 同形）。
+    injectLocalFile,
   };
 }
 
@@ -158,9 +220,11 @@ if (!gotLock) {
   app.on('second-instance', () => showOrFocusShell());
 
   // M3 壳窗口按键入口（brief Step 1 的 before-input-event）：Ctrl/Cmd+K 开搜索窗、
-  // Ctrl/Cmd+E 导出最近归档。挂在 browser-window-created 并按登录分区过滤，而不是
-  // "启动时给当前壳挂一次"：壳窗口可能被真销毁后由 activate/托盘唤起重建，逐窗口
-  // 绑定才不会在重建路径上漏；搜索窗/覆盖层不在 persist:deepseek，不该有这两把键。
+  // Ctrl/Cmd+E 导出最近归档、Ctrl/Cmd+O 注入本地文本文件。挂在 browser-window-created
+  // 并按登录分区过滤，而不是"启动时给当前壳挂一次"：壳窗口可能被真销毁后由
+  // activate/托盘唤起重建，逐窗口绑定才不会在重建路径上漏；搜索窗/覆盖层不在
+  // persist:deepseek，不该有这几把键。R-O：只走这条 before-input-event，绝不注册
+  // globalShortcut、不碰托盘三项契约。
   // Session 类型上没有 partition 读值属性；fromPartition 对同一分区返回同一单例，
   // 用同一性比较代替字符串比较（与 shellWindow.createShellWindow 传的分区串同源）。
   app.on('browser-window-created', (_event, created) => {
@@ -177,6 +241,12 @@ if (!gotLock) {
         // 通知，绝不静默失灵。正常取消（resolve null）不会走到 catch。
         void exportRecentSession().catch(() => {
           new Notification({ title: '导出失败', body: '保存对话框不可用，请稍后再试' }).show();
+        });
+      } else if (key === 'o') {
+        e.preventDefault();
+        // 打开框被平台拒绝时 reject 上抛（同 Ctrl+E）：这里兜一条通知，绝不静默失灵。
+        void injectLocalFile().catch(() => {
+          new Notification({ title: '打开失败', body: '文件选择框不可用，请稍后再试' }).show();
         });
       }
     });

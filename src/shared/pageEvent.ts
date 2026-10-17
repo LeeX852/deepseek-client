@@ -50,3 +50,11 @@ export const injectTextSchema = z.object({
 });
 
 export type InjectText = z.infer<typeof injectTextSchema>;
+
+// JUMP_TO_SESSION 的负载来自主进程——仍按不可信 unknown 校验。max(200) 与侧边栏
+// 标题同口径（sessionListItemSchema.title）：更长的串不可能匹配任何真实 <a>。
+export const jumpPayloadSchema = z.object({
+  title: z.string().min(1).max(200),
+});
+
+export type JumpPayload = z.infer<typeof jumpPayloadSchema>;

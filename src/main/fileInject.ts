@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { injectTextSchema } from '../shared/pageEvent';
 
 const MAX_BYTES = 512 * 1024; // spec：单文件 512KB
 
@@ -28,5 +29,12 @@ export function prepareFileInject(
 ): { ok: true; payload: string } | { ok: false; reason: string } {
   const r = readTextFileCapped(filePath);
   if (!r.ok) return { ok: false, reason: r.reason };
-  return { ok: true, payload: buildQuoteBlock(path.basename(filePath), r.text) };
+  const payload = buildQuoteBlock(path.basename(filePath), r.text);
+  // readTextFileCapped 只按 statSync().size 判超限，量的是文件内容；引用块还要加
+  // 围栏与文件名。恰好 512KB 的文件能过第一关，但组合后的 payload 会越过
+  // injectTextSchema.max(524288)，发过去被 preload 静默丢弃、用户看不到任何反应。
+  // 出门前按"实际要发的那个串"自检：bytes 先兜底，schema 再与 preload 同一条上限对齐。
+  if (Buffer.byteLength(payload, 'utf8') > MAX_BYTES) return { ok: false, reason: 'too-large' };
+  if (!injectTextSchema.safeParse({ text: payload }).success) return { ok: false, reason: 'too-large' };
+  return { ok: true, payload };
 }
