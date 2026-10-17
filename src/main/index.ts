@@ -25,11 +25,23 @@ function safeNotifyBody(raw: string): string {
   return text.length > NOTIFY_BODY_MAX_CHARS ? `${text.slice(0, NOTIFY_BODY_MAX_CHARS)}…` : text;
 }
 
-// 模块级只留托盘句柄与 M3 装配句柄：settings 由 whenReady 里的局部 const 持有
+// 模块级只留托盘句柄、M3 装配句柄与降级闩：settings 由 whenReady 里的局部 const 持有
 // （whenReady 全进程只跑一次，它就是那个唯一句柄，托盘与快捷键共用，绝不再建第二个
 // store）。R24：此前的模块级 settingsStore 自 Task 8 起只写不读（读路径全走局部
 // settings），死代码删除；现在 tray 在 will-quit 里被读取（destroy），不再是只写变量。
+// 降级闩（Plan 4 Task 2）必须在模块级：测试钩子在顶层构造，拿不到 whenReady 闭包里的
+// 局部变量；onEvent 与壳窗口 did-navigate 都要复位它，恢复路径才走得到托盘。
 let tray: ReturnType<typeof createTray> | null = null;
+let degradedLatched = false;
+// Plan 4 Task 2：observer 侧好轮已能复位 degraded（Task 1），主进程这半必须配套——
+// 收到任何新的 PAGE_EVENT（说明 observer 又在真实 DOM 上工作）或壳窗口重新导航时
+// 放开闩锁，否则托盘永远停在「页面已改版」。expectedWebContentsId 过滤保证 onEvent
+// 只可能是壳窗口的上报，故「有上报＝已恢复」成立。tray 在 ready 后才赋值，故可选调用。
+const clearDegraded = (): void => {
+  if (!degradedLatched) return;
+  degradedLatched = false;
+  tray?.set({ degraded: false, unread: 0 });
+};
 
 // Plan 3 Task 7：归档句柄在 whenReady 里赋值（createArchiveStore 依赖
 // userDataDir()，ready 之前 app.getPath 不可靠）。模块级接线函数全部惰性取用：
@@ -107,6 +119,8 @@ if (process.env.DS_SHELL_TEST_HOOKS) {
     getArchive: () => archive,
     openSearch,
     exportRecentSession,
+    // Plan 4 Task 2：e2e 从主进程读降级闩的真实状态，断言「改版降级 → 恢复」两端。
+    isDegraded: () => degradedLatched,
   };
 }
 
@@ -143,6 +157,10 @@ if (!gotLock) {
         });
       }
     });
+    // Plan 4 Task 2：导航即清降级（计划原意）。绑在同一分区过滤的逐窗口位置，
+    // 而非 whenReady 里对当时那个窗口绑一次——壳窗口被销毁后经 activate/托盘重建时
+    // 新窗口才有人清降级。
+    created.webContents.on('did-navigate', clearDegraded);
   });
 
   // 顶层 `await app.whenReady()` 在 ESM 入口会死锁（Task 2 踩过），只能用 then。
@@ -187,11 +205,12 @@ if (!gotLock) {
     });
     // 交接 5：preload 降级闩锁后每个防抖 tick 都会重发 OBSERVER_DEGRADED，
     // 主进程必须幂等——托盘只在首次降级时翻牌一次，之后的重复上报直接吞掉。
-    let degradedLatched = false;
     registerPageEvents({
       // 只认壳窗口当前 webContents 的上报；-1 让"无窗口"时全部拒收。
       expectedWebContentsId: () => getShellWindow()?.webContents.id ?? -1,
       onEvent: (e) => {
+        // 有任何上报即视为 observer 已恢复（见 clearDegraded）：先清降级闩再走原分支。
+        clearDegraded();
         notifier(e);
         // M3 归档接线（不重复注册 registerPageEvents，只在既有 onEvent 里加分支）：
         // 只有 conversation-updated 值得落盘，其余事件类型归通知管线。
