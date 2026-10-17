@@ -32,11 +32,24 @@ function safeNotifyBody(raw: string): string {
 // 降级闩（Plan 4 Task 2）必须在模块级：测试钩子在顶层构造，拿不到 whenReady 闭包里的
 // 局部变量；onEvent 与壳窗口 did-navigate 都要复位它，恢复路径才走得到托盘。
 let tray: ReturnType<typeof createTray> | null = null;
+// Plan 4 Task 3：registerPageEvents 的 dispose 句柄也必须模块级。调用点在 whenReady 闭包
+// 内，而测试钩子对象在模块顶层构造——只有把句柄提到顶层，钩子才够得着它（R-E）。
+// 退出路径 will-quit 也要读它做统一回收。
+let pageEvents: ReturnType<typeof registerPageEvents> | null = null;
 let degradedLatched = false;
 // Plan 4 Task 2：observer 侧好轮已能复位 degraded（Task 1），主进程这半必须配套——
 // 收到任何新的 PAGE_EVENT（说明 observer 又在真实 DOM 上工作）或壳窗口重新导航时
 // 放开闩锁，否则托盘永远停在「页面已改版」。expectedWebContentsId 过滤保证 onEvent
-// 只可能是壳窗口的上报，故「有上报＝已恢复」成立。tray 在 ready 后才赋值，故可选调用。
+// 只可能是壳窗口的上报，故到达这里的上报一定可信。tray 在 ready 后才赋值，故可选调用。
+//
+// R-I（注释诚实化）：真实不变量是「恢复的那一轮必须产生一次上报」，而非「有上报＝
+// 已恢复」无条件成立。observer 在好轮复位 degraded，但 session-list-changed 只在
+// 内容键变化时发（observer.ts:97-100）；若键没变且 auth 没跃迁（页面有会话却无
+// textarea），整轮没有任何 PAGE_EVENT，主进程闩锁永不释放，且此时 preload 也不再发
+// OBSERVER_DEGRADED——托盘会永久停在「页面已改版」。现状下这条路径几乎不可达：会话
+// 侧边栏只在登录态出现、登录态必有 textarea（SELECTORS.signedInMarker），故降级途中
+// lastSignedIn 必为 false，恢复轮一旦有 textarea 就是 false→true 的 auth 跃迁、必发
+// 事件。留此说明：若日后放宽登录态判定或让侧边栏可在未登录态出现，需回头复核该边界。
 const clearDegraded = (): void => {
   if (!degradedLatched) return;
   degradedLatched = false;
@@ -51,9 +64,15 @@ let archive: ArchiveStore | null = null;
 
 // 交接 D：搜索选中 → 唤起壳窗口 → 把标题投递给壳 preload（clickSessionByTitle 在
 // 页面里按标题点真实 <a>，绝不猜造会话 URL）→ 关掉搜索窗，不留悬空面板。
+// Plan 4 Task 3：壳窗口可能是刚被 showOrFocusShell 重建的——此刻 webContents 还没跑
+// 起 preload，立即 send 会发给一个没有监听 IPC.JUMP_TO_SESSION 的帧，点击静默失效。
+// wc.isLoading() 为真时把注入延到 did-finish-load 一次，等 preload 装好再发。
 const jumpToSession = (title: string): void => {
   showOrFocusShell();
-  getShellWindow()?.webContents.send(IPC.JUMP_TO_SESSION, { title });
+  const wc = getShellWindow()?.webContents;
+  if (!wc) return;
+  const send = () => wc.send(IPC.JUMP_TO_SESSION, { title });
+  if (wc.isLoading()) wc.once('did-finish-load', send); else send();
   closeSearchWindow();
 };
 
@@ -121,6 +140,10 @@ if (process.env.DS_SHELL_TEST_HOOKS) {
     exportRecentSession,
     // Plan 4 Task 2：e2e 从主进程读降级闩的真实状态，断言「改版降级 → 恢复」两端。
     isDegraded: () => degradedLatched,
+    // Plan 4 Task 3：唯一新增的钩子面。退出路径的 pageEvents.dispose 在生产里由
+    // will-quit 调用；e2e 要能单独触发它、再观测「摘掉监听器后 PAGE_EVENT 不再进主进程」，
+    // 故把同一句柄的 dispose 露出来（R-E）。
+    disposePageEvents: () => pageEvents?.dispose(),
   };
 }
 
@@ -205,7 +228,8 @@ if (!gotLock) {
     });
     // 交接 5：preload 降级闩锁后每个防抖 tick 都会重发 OBSERVER_DEGRADED，
     // 主进程必须幂等——托盘只在首次降级时翻牌一次，之后的重复上报直接吞掉。
-    registerPageEvents({
+    // Plan 4 Task 3：返回句柄存到模块级，will-quit 才能统一 dispose（页面上报监听器回收）。
+    pageEvents = registerPageEvents({
       // 只认壳窗口当前 webContents 的上报；-1 让"无窗口"时全部拒收。
       expectedWebContentsId: () => getShellWindow()?.webContents.id ?? -1,
       onEvent: (e) => {
@@ -278,14 +302,22 @@ if (!gotLock) {
     });
     app.on('will-quit', () => {
       // R25：dispose 抛错不能吃掉托盘回收——否则幽灵图标缺陷复活，且 Task 9/10 还要
-      // 往这个 handler 里追加清理，隔离必须现在就好。try/finally 保证 tray.destroy 必达。
+      // 往这个 handler 里追加清理，隔离必须现在就好。Plan 4 Task 3 把 pageEvents.dispose/
+      // closeSearchWindow 也并进这条统一回收：不摘 IPC 监听器、不关残留搜索窗，进程退出
+      // 就不算收尾。R-G：新加的任一清理若抛错都绝不能跳过 tray?.destroy()，故用嵌套
+      // try/finally，把 tray?.destroy() 压在最内层 finally，任何一环失败它都必达。
       try {
         hotkeys.dispose();
       } finally {
-        // R22：Windows 上退出前不显式销毁 Tray，通知区域会残留幽灵图标（悬停才消失）。
-        // 托盘是唯一唤起入口，退出后一个"还能点"的残留图标是明确缺陷，必须在此回收；
-        // tray.destroy() 幂等性由 null 守卫兜住（whenReady 未跑完就退出时 tray 仍是 null）。
-        tray?.destroy();
+        try {
+          pageEvents?.dispose();
+          closeSearchWindow();
+        } finally {
+          // R22：Windows 上退出前不显式销毁 Tray，通知区域会残留幽灵图标（悬停才消失）。
+          // 托盘是唯一唤起入口，退出后一个"还能点"的残留图标是明确缺陷，必须在此回收；
+          // tray.destroy() 幂等性由 null 守卫兜住（whenReady 未跑完就退出时 tray 仍是 null）。
+          tray?.destroy();
+        }
       }
     });
     // 托盘常驻：故意不因为窗口全部关闭而退出（hide 进托盘是主路径，

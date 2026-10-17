@@ -55,8 +55,11 @@ test('降级可恢复：改版页降级后，会话 DOM 回来即清主进程降
   });
   await expect.poll(degraded, { timeout: 40_000 }).toBe(true);
 
-  // 阶段三：会话 DOM 回来 → 下一轮 tick 发 session-list-changed → 主进程 onEvent
-  // 复位 degradedLatched。没有这一步，闩锁永不释放，托盘停在降级文案。
+  // 阶段三：会话 DOM 回来（带 textarea，signedIn 由 false 跃迁到 true）→ 下一个防抖
+  // tick 里 observer 先发 auth-state-changed(true)（R-J：清闩的第一个事件是它，不是
+  // session-list-changed——observer 先发 auth 再走会话键分支），主进程 onEvent 收到即
+  // clearDegraded；同一轮若会话内容键也变了还会补发 session-list-changed，两条路径都
+  // 能把闩放掉。没有这一步闩锁永不释放，托盘停在降级文案。
   await shell.evaluate(() => {
     const a = document.createElement('a');
     a.href = 'https://chat.deepseek.com/a/chat/s/recovered1';
@@ -65,6 +68,59 @@ test('降级可恢复：改版页降级后，会话 DOM 回来即清主进程降
     document.body.appendChild(document.createElement('textarea'));
   });
   await expect.poll(degraded, { timeout: 20_000 }).toBe(false);
+
+  await app.close();
+});
+
+// Plan 4 Task 3（R-F）：退出前统一回收 pageEvents。dispose 的「幂等不抛」是空断言——
+// 真正要钉的是「监听器确实摘掉了」：页面持续 mutation、observer 每轮都产
+// session-list-changed。dispose 前计数一路涨；dispose 后计数必须冻住。若 dispose 从未
+// 接上（监听器还在），计数会继续增长，这里的 toBe(frozen) 就会红——这正是红灯要证的事。
+// 页面用最小合成 DOM 而非 fixture：只追加唯一 id 的会话锚点，保证每轮防抖 tick 的内容键
+// 都在变、必发事件（静态页没有后续 mutation，反而发不出第二个事件）。
+test('退出前回收 pageEvents：dispose 后页面再 mutation 不再进主进程', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ds-rec-dispose-'));
+  const page = path.join(dir, 'index.html');
+  // textarea = 登录态；每 100ms 追加一个唯一 id 的会话 <a>，驱动 observer 每轮内容键
+  // 都变 → 持续发 session-list-changed（防抖 tick 500ms 一次）。
+  writeFileSync(
+    page,
+    `<!doctype html><meta charset=utf-8><body><textarea></textarea>
+    <script>let n=0;setInterval(()=>{n++;const a=document.createElement('a');
+    a.href='/a/chat/s/dispose'+n;
+    a.innerHTML='<div class="ds-focus-ring"></div><div>会话'+n+'</div>';
+    document.body.appendChild(a);},100);</script></body>`,
+  );
+  const app = await electron.launch({
+    args: ['.'], cwd: repoRoot,
+    env: {
+      ...process.env,
+      DS_SHELL_TEST_HOOKS: '1',
+      DS_SHELL_USER_DATA: dir,
+      DS_SHELL_URL: 'file://' + page.replace(/\\/g, '/'),
+    },
+  });
+  await app.firstWindow();
+  const count = () =>
+    app.evaluate(() => (globalThis as unknown as { __dsPageEventCount?: number }).__dsPageEventCount ?? 0);
+  const dispose = () =>
+    app.evaluate(() =>
+      (globalThis as unknown as { __dsShellTestHooks: { disposePageEvents(): void } })
+        .__dsShellTestHooks.disposePageEvents(),
+    );
+
+  // 先等真实事件到账：证明监听器在工作、计数是活的（否则「不增长」也可能是 observer 根本没跑）。
+  await expect.poll(count, { timeout: 20_000 }).toBeGreaterThan(0);
+  await dispose();
+  // 留一个防抖周期让 dispose 前已排队的事件落定，再取基线——避免把在途事件算成"增长"。
+  await new Promise((r) => setTimeout(r, 800));
+  const frozen = await count();
+  // 页面继续 mutation 3s（≈6 个防抖 tick）：监听器已摘，计数必须一动不动。
+  await new Promise((r) => setTimeout(r, 3000));
+  expect(await count()).toBe(frozen);
+  // dispose 幂等：再来一次不抛、计数仍旧（生产 will-quit 只调一次，这里顺带钉幂等）。
+  await dispose();
+  expect(await count()).toBe(frozen);
 
   await app.close();
 });
