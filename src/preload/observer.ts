@@ -35,12 +35,17 @@ export function createObserver(opts: {
   doc: Document;
   emit(e: PageEvent): void;
   degradeThreshold?: number;
+  // 注入点（默认真实 DOM 抽取）：answerCompleted 的稳定判定与「取哪段预览」解耦，
+  // 单测可注入受控预览驱动连续两轮相同/不同的场景，无需构造易碎的 DeepSeek DOM。
+  readPreview?: () => string | null;
 }) {
   const { doc, emit } = opts;
   const threshold = opts.degradeThreshold ?? 3;
+  const readPreview = opts.readPreview ?? (() => extractLatestAnswerPreview(doc));
   let lastSessionKey = '';
   let lastSignedIn: boolean | null = null;
-  let lastAnswerPreview: string | null = null;
+  let prevPreview: string | null = null;
+  let emittedPreview: string | null = null;
   let emptyRounds = 0;
   let degraded = false;
 
@@ -68,9 +73,19 @@ export function createObserver(opts: {
     },
     answerCompleted() {
       if (degraded) return;
-      const preview = extractLatestAnswerPreview(doc);
-      if (preview && preview !== lastAnswerPreview) {
-        lastAnswerPreview = preview;
+      // 稳定判定（spec §15.5 / Finding I-1）：流式中预览每个防抖 tick 都在变，
+      // 「变了就发」会在半截误报、还会被通知节流吃掉真正的完成事件。只有当本轮
+      // 预览与上一轮完全相同（即连续 2 次 answerCompleted 一致）才算回答落定；
+      // 且同一个稳定预览只发一次。持续变化的预览永远不发。
+      const preview = readPreview();
+      if (preview === null) {
+        prevPreview = null;
+        return;
+      }
+      const stable = preview === prevPreview;
+      prevPreview = preview;
+      if (stable && preview !== emittedPreview) {
+        emittedPreview = preview;
         emit({ type: 'answer-completed', preview });
       }
     },

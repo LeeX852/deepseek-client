@@ -81,6 +81,9 @@ if (!gotLock) {
         n.show();
       },
       now: () => Date.now(),
+      // spec §15.5：回答完成通知只在窗口未聚焦时弹——前台正在读无需打扰。
+      // 无壳窗口（已销毁）按未聚焦处理，通知照常发出（点击再重建/唤起）。
+      isFocused: () => getShellWindow()?.isFocused() ?? false,
     });
     // 交接 5：preload 降级闩锁后每个防抖 tick 都会重发 OBSERVER_DEGRADED，
     // 主进程必须幂等——托盘只在首次降级时翻牌一次，之后的重复上报直接吞掉。
@@ -119,6 +122,10 @@ if (!gotLock) {
       // 的 clipboard.readText() 返回 Promise<string>，而 performQuickAsk 是同步契约，
       // 故先 await 读取再以同步 getter 注入；读取失败按空剪贴板提示，绝不静默失灵。
       onQuickAsk: () => {
+        // Finding I-3：先把窗口唤起再注入——隐藏到托盘时若只读剪贴板发注入，
+        // 用户完全看不到反馈（Plan 1 占位实现调过 showOrFocusShell，接入真实
+        // quickAsk 时漏掉了）。唤起必须在读剪贴板/发送注入之前。
+        showOrFocusShell();
         void clipboard
           .readText()
           .then((text) =>

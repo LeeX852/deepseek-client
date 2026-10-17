@@ -25,11 +25,16 @@ export function createNotifier(deps: {
   settings(): { notifyOnAnswer: boolean };
   show(title: string, body: string): void;
   now(): number;
+  // spec §15.5：回答完成只在窗口未聚焦时提示。缺省（undefined）按未聚焦处理，
+  // 即默认通知；auth-state-changed{signedIn:false} 不受此门控，始终提示。
+  isFocused?: () => boolean;
 }) {
   const throttle = createThrottle(deps.now);
   return (e: PageEvent): void => {
     if (e.type === 'answer-completed') {
       if (!deps.settings().notifyOnAnswer) return;
+      // 聚焦检查前置于节流：前台阅读无需通知，且不该白白吃掉一个节流名额。
+      if (deps.isFocused?.() === true) return;
       const key = e.sessionId ?? 'current';
       if (!throttle(`answer:${key}`)) return;
       deps.show('DeepSeek 有新回复', e.preview ?? '回答已完成');
