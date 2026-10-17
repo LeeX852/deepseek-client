@@ -20,7 +20,9 @@ export function buildMenuActions(): Array<{ id: TrayActionId; label: string }> {
 }
 
 export function createTray(deps: { onToggle(): void; onShow(): void; onSettings(): void; onQuit(): void }) {
-  const icon = nativeImage.createFromPath(path.join(app.getAppPath(), 'out/resources/icon.png'));
+  // 托盘用 32px 专用图：把 256 的窗口图标交给系统缩到 16/24 会糊，
+  // 通知区是用户每天看几十次的地方，清晰度值得一个独立尺寸。
+  const icon = nativeImage.createFromPath(path.join(app.getAppPath(), 'out/resources/icon-32.png'));
   const tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.setToolTip(buildTooltip({ unread: 0, degraded: false }));
 
