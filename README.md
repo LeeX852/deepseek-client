@@ -49,11 +49,11 @@ pnpm exec electron-builder --win portable
 
 见 [`spike/m0/REPORT.md`](spike/m0/REPORT.md)。
 
-**当前状态：`PENDING-USER-RUN`。** spike 代码已就绪并在未登录态跑通（页面正常渲染真实登录页、preload 能读 DOM 落盘、UA 清洗生效），但五项风险结论——站点是否接受登录、DOM 可达性、React 输入注入是否被接受、合成 paste 带 File、登录是否全程在白名单域内——**必须由真人登录跑完 `spike/m0` 的 Step 3 后才能定稿**。
+**当前状态：五项风险全部通过（2026-10-17 真人登录验证）。** 站点接受本环境并可登录；DOM 可达（稳定钩子是 `ds-*` 设计系统类 + `a[href*="/a/chat/s/"]` URL 结构，哈希 CSS-Module 类不可用）；React 受控输入框接受程序化写入（`persisted=true`）；合成 paste 带 File 能被页面接收（出现附件缩略图）；登录全程 hostname 停在 `chat.deepseek.com` 白名单内。
 
-因此 `src/preload/selectors.ts` 与 `tests/fixtures/*`（选择器契约测试）在本仓库中**有意不存在**：没有真实登录态会话数据之前写选择器就是编造。执行人按 `REPORT.md` 的「运行说明」登录后，用 `Ctrl+Shift+U` 采集注入 / paste 证据，据产物定稿选择器并回填五项结论。若结论 1 或 2 为「不通过」，则停止、不进入 Plan 2。
+据此 `src/preload/selectors.ts` 与 `tests/fixtures/{logged-in,signed-out}.html` 已定稿，并由 `tests/unit/selectors-contract.test.ts` 锁成契约。**Plan 2（页面增强：归档 / 通知 / 划词注入 / 截图注入）解锁。**
 
-远端页面结构变化时，先跑 `pnpm test` 的选择器契约测试（定稿后）报警，而不是靠用户发现。
+远端页面结构变化时，先跑 `pnpm test` 的选择器契约测试报警，而不是靠用户发现。
 
 ## 手动验收清单
 
