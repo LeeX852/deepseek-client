@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/ipc';
 import { injectTextSchema } from '../shared/pageEvent';
 import { SELECTORS } from './selectors';
-import { createObserver } from './observer';
+import { clickSessionByTitle, createObserver } from './observer';
 
 // 降级时序（Task 8 交接 4）：observer 默认阈值 3 轮 × 500ms ≈ 1.5s，而真实
 // DeepSeek SPA 的 hydrate 常常不止这么久——慢加载会被误判成"页面改版"而整场
@@ -59,5 +59,12 @@ function injectText(raw: unknown) {
 
 // IPC 契约（Task 3）：负载是监听器的第二个位置参数，不是事件属性。
 ipcRenderer.on(IPC.INJECT_TEXT, (_e, payload) => injectText(payload));
+
+// Task 6：跳转到侧边栏里标题匹配的会话。不拼 URL 导航，直接点击真实 <a>，
+// 让 SPA 走自己的路由；标题不存在时 clickSessionByTitle 返回 false，静默不动作。
+ipcRenderer.on(IPC.JUMP_TO_SESSION, (_e, arg) => {
+  const title = (arg as { title?: string })?.title;
+  if (title) clickSessionByTitle(document, title);
+});
 
 contextBridge.exposeInMainWorld('__dsShellPreload', { version: 1 });

@@ -18,6 +18,21 @@ export function extractSessions(doc: Document): Array<{ id: string; title: strin
   return out;
 }
 
+// Task 6：在侧边栏按标题定位并点击真实会话链接——绝不猜造 URL 拼导航。
+// 标题匹配与 extractSessions 同口径：折叠空白、忽略大小写；
+// SELECTORS.sessionItemTitle 去掉开头的 `a[href…]` 段，改为在锚点内相对查询
+// （同 extractSessions 的技巧）。命中即 a.click() 并返回 true。
+export function clickSessionByTitle(doc: Document, title: string): boolean {
+  const want = title.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!want) return false;
+  for (const a of Array.from(doc.querySelectorAll<HTMLAnchorElement>(SELECTORS.sessionItem))) {
+    const t = (a.querySelector(SELECTORS.sessionItemTitle.replace(/^a\[href[^]]*\]\s*/, ''))?.textContent ?? a.textContent ?? '')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    if (t === want) { a.click(); return true; }
+  }
+  return false;
+}
+
 export function extractSignedIn(doc: Document): boolean {
   return !!doc.querySelector(SELECTORS.signedInMarker);
 }

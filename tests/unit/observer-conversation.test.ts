@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { createObserver, extractConversation } from '../../src/preload/observer';
+import { clickSessionByTitle, createObserver, extractConversation } from '../../src/preload/observer';
 import type { PageEvent } from '../../src/shared/pageEvent';
 import { pageEventSchema } from '../../src/shared/pageEvent';
 
@@ -16,6 +16,19 @@ describe('extractConversation', () => {
     expect(msgs.length).toBeGreaterThan(0);
     expect(msgs.some(m => m.role === 'assistant')).toBe(true);
     expect(msgs.every(m => (m.role === 'user' || m.role === 'assistant') && m.text.length <= 20000)).toBe(true);
+  });
+});
+
+// Task 6：侧边栏按标题定位跳转。点击真实 <a>（jsdom 对 <a> 的 click 会尝试
+// 导航并打 "Not implemented: navigation"——不抛异常也不该断言导航），
+// 这里只断言返回值：命中并点击 = true，未命中 = false。
+describe('clickSessionByTitle', () => {
+  it('命中存在标题返回 true，不存在返回 false', () => {
+    const d = doc('logged-in.html');
+    const first = d.querySelector('a[href*="/a/chat/s/"] .ds-focus-ring + div')?.textContent?.trim() ?? '';
+    expect(first).not.toBe('');
+    expect(clickSessionByTitle(d, first)).toBe(true);
+    expect(clickSessionByTitle(d, '__不存在__的标题')).toBe(false);
   });
 });
 
