@@ -7,6 +7,17 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
+// 默认挂本地页：本文件的窗口计数断言（:190/:237/:325）只依赖 domcontentloaded、
+// 窗口几何与测试钩子，不依赖远端页面内容。挂线上站时一次加载慢/失败就会触发
+// 应用的离线覆盖层窗口（src/main/overlay.ts 的 did-fail-load），凭空多一个窗口，
+// 把计数断言打成偶发红——那是对网络的假依赖，去掉它即可。
+// 需要真实站的用例用 extraEnv 显式覆盖 DS_SHELL_URL。
+// 独立于 userData 目录：该文件用 readdirSync(dir) 断言落盘文件，页面不能混进去。
+const pageDir = mkdtempSync(path.join(tmpdir(), 'ds-shell-page-'));
+const pagePath = path.join(pageDir, 'index.html');
+writeFileSync(pagePath, '<!doctype html><meta charset=utf-8><body></body>');
+const localPageUrl = 'file://' + pagePath.replace(/\\/g, '/');
+
 async function launch(seed?: Record<string, unknown>, extraEnv?: Record<string, string>) {
   const dir = mkdtempSync(path.join(tmpdir(), 'ds-shell-e2e-'));
   for (const [name, value] of Object.entries(seed ?? {})) {
@@ -15,7 +26,7 @@ async function launch(seed?: Record<string, unknown>, extraEnv?: Record<string, 
   const app = await electron.launch({
     args: ['.'],
     cwd: repoRoot,
-    env: { ...process.env, DS_SHELL_USER_DATA: dir, DS_SHELL_URL: 'https://chat.deepseek.com/', ...extraEnv },
+    env: { ...process.env, DS_SHELL_USER_DATA: dir, DS_SHELL_URL: localPageUrl, ...extraEnv },
   });
   return { app, dir };
 }
@@ -304,7 +315,7 @@ test('second-instance 唤起而非切换：重复启动后，可见且聚焦的�
   const exeName = readFileSync(path.join(repoRoot, 'node_modules', 'electron', 'path.txt'), 'utf8').trim();
   const second = spawn(path.join(repoRoot, 'node_modules', 'electron', 'dist', exeName), ['.'], {
     cwd: repoRoot,
-    env: { ...process.env, DS_SHELL_USER_DATA: dir, DS_SHELL_URL: 'https://chat.deepseek.com/' },
+    env: { ...process.env, DS_SHELL_USER_DATA: dir, DS_SHELL_URL: localPageUrl },
     stdio: 'ignore',
   });
   await new Promise<void>((resolve, reject) => {
