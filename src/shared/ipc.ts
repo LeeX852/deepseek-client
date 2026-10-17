@@ -5,6 +5,9 @@ export const IPC = {
   OBSERVER_DEGRADED: 'shell:observer-degraded',
   INJECT_TEXT: 'shell:inject-text',
   STATE_SNAPSHOT: 'shell:state-snapshot',
+  SEARCH_QUERY: 'shell:search-query',
+  SEARCH_JUMP: 'shell:search-jump',
+  JUMP_TO_SESSION: 'shell:jump-to-session',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

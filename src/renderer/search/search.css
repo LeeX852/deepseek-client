@@ -1,0 +1,52 @@
+/* 官方中性风：浅灰底 + #4d6bfe 强调，无投影 */
+:root {
+  --bg: #f7f7f8;
+  --fg: #1f2329;
+  --muted: #8a8f98;
+  --accent: #4d6bfe;
+  --line: #e4e6eb;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+main { padding: 12px; }
+
+#query {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--fg);
+  font-size: 14px;
+  outline: none;
+}
+#query:focus { border-color: var(--accent); }
+
+#results {
+  list-style: none;
+  margin-top: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+#results li {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#results li:hover { background: #eef1fe; color: var(--accent); }
+
+.hint {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
