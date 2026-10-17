@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { minimalLocalPageUrl } from './helpers';
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 // 默认挂本地页：本文件的窗口计数断言（:190/:237/:325）只依赖 domcontentloaded、
@@ -12,11 +14,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 // 应用的离线覆盖层窗口（src/main/overlay.ts 的 did-fail-load），凭空多一个窗口，
 // 把计数断言打成偶发红——那是对网络的假依赖，去掉它即可。
 // 需要真实站的用例用 extraEnv 显式覆盖 DS_SHELL_URL。
-// 独立于 userData 目录：该文件用 readdirSync(dir) 断言落盘文件，页面不能混进去。
-const pageDir = mkdtempSync(path.join(tmpdir(), 'ds-shell-page-'));
-const pagePath = path.join(pageDir, 'index.html');
-writeFileSync(pagePath, '<!doctype html><meta charset=utf-8><body></body>');
-const localPageUrl = 'file://' + pagePath.replace(/\\/g, '/');
+// 页面由 helpers.minimalLocalPageUrl() 建在独立临时目录，不混进本文件用 readdirSync(dir)
+// 断言的 userData 目录。
+const localPageUrl = minimalLocalPageUrl();
 
 async function launch(seed?: Record<string, unknown>, extraEnv?: Record<string, string>) {
   const dir = mkdtempSync(path.join(tmpdir(), 'ds-shell-e2e-'));

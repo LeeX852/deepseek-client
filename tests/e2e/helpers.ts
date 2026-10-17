@@ -78,3 +78,13 @@ export async function waitForFixtureReady(app: ElectronApplication, win: Page): 
     throw new Error(`fixture 20s 内未就绪（需 a[href*="/a/chat/s/"] 且 textarea）；${detail}`, { cause });
   }
 }
+
+// Task 6b：只断言主进程状态的用例（hotkeys 查 globalShortcut.isRegistered、
+// tray-quit 数 Tray.prototype.destroy 调用）不需要页面内容。挂线上站时一次加载慢/
+// 失败就会触发 overlay.ts 的离线覆盖层窗口，凭空多一个窗口或让用例超时——那是对
+// 网络的假依赖。返回极简本地页的 file:// URL，拼法沿用 inject/shell-window 既有口径。
+export function minimalLocalPageUrl(): string {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'ds-page-')), 'index.html');
+  writeFileSync(file, '<!doctype html><meta charset=utf-8><body></body>');
+  return 'file://' + file.replace(/\\/g, '/');
+}

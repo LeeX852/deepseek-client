@@ -4,13 +4,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { minimalLocalPageUrl } from './helpers';
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 async function launch() {
   const dir = mkdtempSync(path.join(tmpdir(), 'ds-tray-quit-'));
   const app = await electron.launch({
     args: ['.'], cwd: repoRoot,
-    env: { ...process.env, DS_SHELL_USER_DATA: dir, DS_SHELL_URL: 'https://chat.deepseek.com/' },
+    env: { ...process.env, DS_SHELL_USER_DATA: dir, DS_SHELL_URL: minimalLocalPageUrl() },
   });
   return { app, dir };
 }
