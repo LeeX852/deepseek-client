@@ -23,3 +23,9 @@ export const pageEventSchema = z.discriminatedUnion('type', [
 ]);
 
 export type PageEvent = z.infer<typeof pageEventSchema>;
+
+export const injectTextSchema = z.object({
+  text: z.string().min(1).max(524_288),
+});
+
+export type InjectText = z.infer<typeof injectTextSchema>;

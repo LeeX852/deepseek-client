@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pageEventSchema } from '../../src/shared/pageEvent';
+import { injectTextSchema, pageEventSchema } from '../../src/shared/pageEvent';
 
 describe('pageEventSchema', () => {
   it('接受会话列表事件', () => {
@@ -46,5 +46,17 @@ describe('pageEventSchema', () => {
     expect(pageEventSchema.safeParse({ type: 'answer-completed', sessionId: 'sess_01-A', preview: '结论是' }).success).toBe(true);
     expect(pageEventSchema.safeParse({ type: 'answer-completed', sessionId: '../../secret' }).success).toBe(false);
     expect(pageEventSchema.safeParse({ type: 'answer-completed', sessionId: 'a'.repeat(65) }).success).toBe(false);
+  });
+});
+
+describe('injectTextSchema', () => {
+  it('接受普通文本', () => {
+    expect(injectTextSchema.safeParse({ text: '选中的文字' }).success).toBe(true);
+  });
+  it('拒绝空文本', () => {
+    expect(injectTextSchema.safeParse({ text: '' }).success).toBe(false);
+  });
+  it('拒绝超过 512KB 的文本（与文件注入上限一致）', () => {
+    expect(injectTextSchema.safeParse({ text: 'x'.repeat(524_289) }).success).toBe(false);
   });
 });
