@@ -1,5 +1,4 @@
 import { test, expect, _electron as electron } from '@playwright/test';
-import { build } from 'esbuild';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,25 +18,14 @@ type ArchiveEvent = {
   messages: Array<{ role: 'user' | 'assistant'; text: string }>;
 };
 
-// index.ts 不许动（Task 7 才接触发线），所以 openSearchWindow 不在主入口的
-// 测试钩子里。这里用仓库既有依赖 esbuild 现编一个 CJS 钩子模块，测试内
-// app.evaluate 在主进程 require 它：建 store → upsert 一条归档 → 开搜索窗。
-async function buildSearchHook(outDir: string): Promise<string> {
-  const outfile = path.join(outDir, 'search-hook.cjs');
-  await build({
-    stdin: {
-      contents: [
-        `export { openSearchWindow, closeSearchWindow } from './src/main/search';`,
-        `export { createArchiveStore } from './src/main/archive/store';`,
-      ].join('\n'),
-      resolveDir: repoRoot,
-      loader: 'ts',
-    },
-    bundle: true, platform: 'node', format: 'cjs', target: 'node22',
-    external: ['electron'], outfile,
-  });
-  return outfile;
-}
+// Task 5 评审交接 C：index.ts 在 Task 7 已是装配点，这里不再用 esbuild 现编
+// 临时 CJS 钩子——改为驱动 DS_SHELL_TEST_HOOKS 露出的生产实例：真实 archive
+// store（userData/archive）、真实 openSearchWindow + jumpToSession 回调。
+// 断言与旧版逐条等价，未放宽。
+type ShellHooks = {
+  getArchive: () => { upsert(ev: ArchiveEvent): void } | null;
+  openSearch: () => void;
+};
 
 // 壳指向本地服务而不是真站或坏站：坏站会弹离线覆盖层，第二个窗口和
 // 搜索窗口在 waitForEvent('window') 上打架；本地闭合服务两者都不碰。
@@ -60,31 +48,31 @@ async function listenOnFreePort(srv: Server): Promise<string> {
 
 test('搜索窗口 SEARCH_QUERY 命中已归档标题，列表渲染且可直查', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'ds-search-user-'));
-  const archiveDir = mkdtempSync(path.join(tmpdir(), 'ds-search-archive-'));
-  const hookDir = mkdtempSync(path.join(tmpdir(), 'ds-search-hook-'));
-  const hookPath = await buildSearchHook(hookDir);
   const srv = servingServer();
   const shellUrl = await listenOnFreePort(srv);
   const app = await electron.launch({
     args: ['.'], cwd: repoRoot,
-    env: { ...process.env, DS_SHELL_USER_DATA: userData, DS_SHELL_URL: shellUrl },
+    env: {
+      ...process.env,
+      DS_SHELL_TEST_HOOKS: '1',
+      DS_SHELL_USER_DATA: userData,
+      DS_SHELL_URL: shellUrl,
+    },
   });
   try {
     await app.firstWindow();
 
-    // 主进程内：require 钩子 → 建 store → 归档一条会话 → 开搜索窗口。
-    // SEARCH_QUERY 的 ipcMain.handle 注册也在 openSearchWindow 里完成。
+    // 主进程内：取生产装配的 archive 句柄 → 归档一条会话 → 开真实搜索窗。
+    // SEARCH_QUERY 的 ipcMain.handle 注册在 openSearchWindow 里完成（真实实例）。
     // 注意：app.evaluate 的函数体被序列化进主进程，闭包常量不可见，
-    // 一切取值必须走 payload。
-    await app.evaluate((_modules, payload: { hookPath: string; archiveDir: string; title: string }) => {
-      const { createRequire } = process.getBuiltinModule('node:module');
-      const req = createRequire(payload.hookPath);
-      type ArchiveHook = {
-        createArchiveStore: (dir: string) => { upsert: (ev: ArchiveEvent) => void };
-        openSearchWindow: (store: unknown, onJump: (title: string) => void) => void;
-      };
-      const hook = req(payload.hookPath) as ArchiveHook;
-      const store = hook.createArchiveStore(payload.archiveDir);
+    // 一切取值必须走 payload。窗口事件先挂监听再开窗，不赌时序。
+    const windowWait = app.waitForEvent('window', { timeout: 30_000 });
+    await app.evaluate((_electronModule, payload: { title: string }) => {
+      const g = globalThis as unknown as { __dsShellTestHooks?: ShellHooks };
+      const hooks = g.__dsShellTestHooks;
+      if (!hooks) throw new Error('测试钩子未安装：主进程启动时缺少 DS_SHELL_TEST_HOOKS');
+      const store = hooks.getArchive();
+      if (!store) throw new Error('真实归档 store 未就绪（装配在 whenReady 里没跑到？）');
       store.upsert({
         type: 'conversation-updated',
         sessionId: payload.title,
@@ -93,10 +81,10 @@ test('搜索窗口 SEARCH_QUERY 命中已归档标题，列表渲染且可直查
           { role: 'assistant', text: 'e2e 归档搜索回答' },
         ],
       });
-      hook.openSearchWindow(store, () => { /* Task 6 才接跳转，这里只需开窗注册 handler */ });
-    }, { hookPath, archiveDir, title: ARCHIVED_TITLE });
+      hooks.openSearch();
+    }, { title: ARCHIVED_TITLE });
 
-    const searchWin = await app.waitForEvent('window', { timeout: 30_000 });
+    const searchWin = await windowWait;
     await searchWin.waitForLoadState('domcontentloaded');
     await expect(searchWin.title()).resolves.toContain('搜索会话');
 
@@ -113,8 +101,6 @@ test('搜索窗口 SEARCH_QUERY 命中已归档标题，列表渲染且可直查
   } finally {
     await app.close().catch(() => undefined);
     srv.close();
-    for (const dir of [hookDir, archiveDir, userData]) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
-    }
+    try { rmSync(userData, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
   }
 });

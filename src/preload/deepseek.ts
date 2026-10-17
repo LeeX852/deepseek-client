@@ -62,9 +62,11 @@ ipcRenderer.on(IPC.INJECT_TEXT, (_e, payload) => injectText(payload));
 
 // Task 6：跳转到侧边栏里标题匹配的会话。不拼 URL 导航，直接点击真实 <a>，
 // 让 SPA 走自己的路由；标题不存在时 clickSessionByTitle 返回 false，静默不动作。
+// Task 7 交接 B：负载来自 IPC，是不可信 unknown——title 必须是真字符串才进匹配，
+// 杜绝 {title:{}} 之类的畸形负载把非字符串塞进 DOM 查询。
 ipcRenderer.on(IPC.JUMP_TO_SESSION, (_e, arg) => {
-  const title = (arg as { title?: string })?.title;
-  if (title) clickSessionByTitle(document, title);
+  const title = (arg as { title?: unknown })?.title;
+  if (typeof title === 'string' && title) clickSessionByTitle(document, title);
 });
 
 contextBridge.exposeInMainWorld('__dsShellPreload', { version: 1 });

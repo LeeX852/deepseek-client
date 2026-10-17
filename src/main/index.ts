@@ -1,11 +1,14 @@
-import { app, BrowserWindow, Notification, clipboard, shell } from 'electron';
-import { appendFileSync } from 'node:fs';
-import { createShellWindow, getShellWindow, initShell, onShellEvent, quitApp, showOrFocusShell, toggleShell } from './shellWindow';
+import { app, BrowserWindow, Notification, clipboard, dialog, session, shell } from 'electron';
+import { appendFileSync, writeFileSync } from 'node:fs';
+import { createShellWindow, DEEPSEEK_PARTITION, getShellWindow, initShell, onShellEvent, quitApp, showOrFocusShell, toggleShell } from './shellWindow';
 import { createTray } from './tray';
 import { registerHotkeys } from './hotkeys';
 import { registerPageEvents } from './pageEvents';
 import { createNotifier } from './notifications';
 import { performQuickAsk } from './quickAsk';
+import { createArchiveStore, type ArchiveStore } from './archive/store';
+import { createExportAction } from './archive/exportAction';
+import { closeSearchWindow, openSearchWindow } from './search';
 import { IPC } from '../shared/ipc';
 import { userDataDir } from './paths';
 
@@ -22,11 +25,49 @@ function safeNotifyBody(raw: string): string {
   return text.length > NOTIFY_BODY_MAX_CHARS ? `${text.slice(0, NOTIFY_BODY_MAX_CHARS)}…` : text;
 }
 
-// 模块级只留托盘句柄：store 由 whenReady 里的局部 const 持有（whenReady 全进程只跑
-// 一次，它就是那个唯一句柄，托盘与快捷键共用，绝不再建第二个 store）。
-// R24：此前的模块级 settingsStore 自 Task 8 起只写不读（读路径全走局部 settings），
-// 死代码删除；现在 tray 在 will-quit 里被读取（destroy），不再是只写变量。
+// 模块级只留托盘句柄与 M3 装配句柄：settings 由 whenReady 里的局部 const 持有
+// （whenReady 全进程只跑一次，它就是那个唯一句柄，托盘与快捷键共用，绝不再建第二个
+// store）。R24：此前的模块级 settingsStore 自 Task 8 起只写不读（读路径全走局部
+// settings），死代码删除；现在 tray 在 will-quit 里被读取（destroy），不再是只写变量。
 let tray: ReturnType<typeof createTray> | null = null;
+
+// Plan 3 Task 7：归档句柄在 whenReady 里赋值（createArchiveStore 依赖
+// userDataDir()，ready 之前 app.getPath 不可靠）。模块级接线函数全部惰性取用：
+// ready 之前 archive 为 null，跳转/导出/搜索各自降级为"发送失败即无操作/空提示"，
+// 绝不空引用。
+let archive: ArchiveStore | null = null;
+
+// 交接 D：搜索选中 → 唤起壳窗口 → 把标题投递给壳 preload（clickSessionByTitle 在
+// 页面里按标题点真实 <a>，绝不猜造会话 URL）→ 关掉搜索窗，不留悬空面板。
+const jumpToSession = (title: string): void => {
+  showOrFocusShell();
+  getShellWindow()?.webContents.send(IPC.JUMP_TO_SESSION, { title });
+  closeSearchWindow();
+};
+
+// Ctrl/Cmd+K 的真实入口：搜索窗与归档 store 共用装配点实例（生产路径唯一句柄）。
+const openSearch = (): void => {
+  if (archive) openSearchWindow(archive, jumpToSession);
+};
+
+// 交接 A（spec §15.7）：Ctrl/Cmd+E 导出最近更新的归档会话。纯转换与全部决策分支
+// 在 exportAction（有单测）；这里只做 Electron 胶水。
+const exportRecentSession = createExportAction({
+  list: () => archive?.list() ?? [],
+  get: (id) => archive?.get(id),
+  // 有壳窗口时保存框挂到壳上（父窗口模态）；无壳走无参重载。canceled 时
+  // filePath 是空字符串，一律归一为 null（取消即整体放弃）。
+  pickSavePath: async (defaultPath) => {
+    const options = { defaultPath, filters: [{ name: 'Markdown', extensions: ['md'] }] };
+    const parent = getShellWindow();
+    const result = parent
+      ? await dialog.showSaveDialog(parent, options)
+      : await dialog.showSaveDialog(options);
+    return result.canceled || !result.filePath ? null : result.filePath;
+  },
+  writeMarkdown: (filePath, markdown) => { writeFileSync(filePath, markdown, 'utf8'); },
+  notify: (title, body) => { new Notification({ title, body }).show(); },
+});
 
 // 测试钩子（brief Step 4「暴露测试钩子」）：只在 DS_SHELL_TEST_HOOKS 置位时挂载，
 // 生产启动路径不留任何全局。生命周期 API 只能由主进程调用，而 e2e 必须在同一个
@@ -42,6 +83,14 @@ if (process.env.DS_SHELL_TEST_HOOKS) {
     recordShellEvents: (file: string) => {
       onShellEvent((e) => { appendFileSync(file, `${e}\n`); });
     },
+    // Task 5 评审交接 C：index.ts 已是装配点，e2e 不再用临时 CJS bundle 自拼
+    // store/搜索窗——这里露出生产装配的同一批实例（真实 archive、真实
+    // openSearchWindow+jumpToSession 回调、真实导出 action），e2e 驱动的
+    // 就是用户按 Ctrl+K/Ctrl+E 会走到的那条线。
+    getArchive: () => archive,
+    openSearch,
+    jumpToSession,
+    exportRecentSession,
   };
 }
 
@@ -55,12 +104,39 @@ if (!gotLock) {
   // 图标/再次执行可执行文件看到的却是窗口消失，语义正好相反。唤起必须是单向的。
   app.on('second-instance', () => showOrFocusShell());
 
+  // M3 壳窗口按键入口（brief Step 1 的 before-input-event）：Ctrl/Cmd+K 开搜索窗、
+  // Ctrl/Cmd+E 导出最近归档。挂在 browser-window-created 并按登录分区过滤，而不是
+  // "启动时给当前壳挂一次"：壳窗口可能被真销毁后由 activate/托盘唤起重建，逐窗口
+  // 绑定才不会在重建路径上漏；搜索窗/覆盖层不在 persist:deepseek，不该有这两把键。
+  // Session 类型上没有 partition 读值属性；fromPartition 对同一分区返回同一单例，
+  // 用同一性比较代替字符串比较（与 shellWindow.createShellWindow 传的分区串同源）。
+  app.on('browser-window-created', (_event, created) => {
+    if (created.webContents.session !== session.fromPartition(DEEPSEEK_PARTITION)) return;
+    created.webContents.on('before-input-event', (e, input) => {
+      if (input.type !== 'keyDown' || !(input.control || input.meta) || input.alt) return;
+      const key = input.key.toLowerCase();
+      if (key === 'k') {
+        e.preventDefault();
+        openSearch();
+      } else if (key === 'e') {
+        e.preventDefault();
+        // 保存框被平台拒绝时 reject 上抛（exportAction 不吞异常）：这里兜一条
+        // 通知，绝不静默失灵。正常取消（resolve null）不会走到 catch。
+        void exportRecentSession().catch(() => {
+          new Notification({ title: '导出失败', body: '保存对话框不可用，请稍后再试' }).show();
+        });
+      }
+    });
+  });
+
   // 顶层 `await app.whenReady()` 在 ESM 入口会死锁（Task 2 踩过），只能用 then。
   void app.whenReady().then(() => {
     // initShell 的返回值是全进程唯一的 store 句柄；局部 const 收窄非 null，
     // 托盘与快捷键共用同一句柄，绝不再建第二个 store。
     const settings = initShell(userDataDir());
     createShellWindow();
+    // M3 归档落盘：userData/archive/<key>.json，供 Ctrl+K 搜索与 Ctrl+E 导出。
+    archive = createArchiveStore(userDataDir());
     // 关窗后托盘是唯一唤起入口；退出直接走 quitApp()——quitters/quitEmitted 是
     // 进程级永久闩（Task 6 交接裁决），托盘不做可取消退出，否则 before-quit +
     // preventDefault 会让应用活着但 close-to-tray 失效、quit 广播永不再发。
@@ -93,6 +169,9 @@ if (!gotLock) {
       expectedWebContentsId: () => getShellWindow()?.webContents.id ?? -1,
       onEvent: (e) => {
         notifier(e);
+        // M3 归档接线（不重复注册 registerPageEvents，只在既有 onEvent 里加分支）：
+        // 只有 conversation-updated 值得落盘，其余事件类型归通知管线。
+        if (e.type === 'conversation-updated') archive?.upsert(e);
         if (process.env.DS_SHELL_TEST_HOOKS) {
           const g = globalThis as unknown as { __dsPageEventCount?: number; __dsPageEventTypes?: string[] };
           g.__dsPageEventCount = (g.__dsPageEventCount ?? 0) + 1;
