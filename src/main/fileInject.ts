@@ -2,6 +2,9 @@ import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { injectTextSchema } from '../shared/pageEvent';
 
+// MAX_BYTES 与 pageEvent.injectTextSchema 的 max(524_288) 是同一 512KB 上限的两种量纲
+// （此处数 UTF-8 字节，那里数 UTF-16 code unit）：ASCII 下重合，多字节内容下字节检查更严
+// （只会更早拒，绝不会放不合格 payload 出门）——不是笔误，别把两者"对齐"成同一个数。
 const MAX_BYTES = 512 * 1024; // spec：单文件 512KB
 
 export function readTextFileCapped(

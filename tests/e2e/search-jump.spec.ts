@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForFixtureReady } from './helpers';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -132,9 +133,7 @@ test('M3 装配端到端：observer 带真 sessionId+title 落归档，搜索用
   try {
     const shellWin = await app.firstWindow();
     await shellWin.waitForLoadState('domcontentloaded');
-    await expect
-      .poll(() => shellWin.evaluate(() => document.querySelectorAll('a[href*="/a/chat/s/"]').length), { timeout: 15_000 })
-      .toBeGreaterThan(0);
+    await waitForFixtureReady(app, shellWin);
 
     // 生产 observer(conversation-updated 带 sessionId+title) → pageEvents → 真实 store 落盘。
     const archiveDir = path.join(userData, 'archive');
@@ -206,9 +205,7 @@ test('Ctrl/Cmd+K 真实按键路径：壳窗口 keydown 开出搜索窗；搜索
   try {
     const shellWin = await app.firstWindow();
     await shellWin.waitForLoadState('domcontentloaded');
-    await expect
-      .poll(() => shellWin.evaluate(() => document.querySelectorAll('a[href*="/a/chat/s/"]').length), { timeout: 15_000 })
-      .toBeGreaterThan(0);
+    await waitForFixtureReady(app, shellWin);
     expect(await searchWindowCount(app)).toBe(0);
 
     const winReady = app.waitForEvent('window', { timeout: 30_000 });
@@ -358,9 +355,7 @@ test('关闭壳窗口后经真实搜索跳转：点击落在重建后的窗口�
   try {
     const shellWin = await app.firstWindow();
     await shellWin.waitForLoadState('domcontentloaded');
-    await expect
-      .poll(() => shellWin.evaluate(() => document.querySelectorAll('a[href*="/a/chat/s/"]').length), { timeout: 15_000 })
-      .toBeGreaterThan(0);
+    await waitForFixtureReady(app, shellWin);
 
     // 先等真实 observer 把这条会话落进归档，跳转才有一个真标题可用。
     const archiveDir = path.join(userData, 'archive');

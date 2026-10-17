@@ -60,7 +60,11 @@ test('搜索窗口 SEARCH_QUERY 命中已归档标题，列表渲染且可直查
     },
   });
   try {
-    await app.firstWindow();
+    // http fixture 就绪等待（Task 5 Step 1）：这页是闭合的 SHELL-OK（无会话锚点/
+    // textarea），等它的 #served 出现再驱动钩子——与 search-jump/recovery 的等待同一
+    // 意图（等 fixture 真加载完再取样），只是选择器随页面形状不同，故不走那个 helper。
+    const shellWin = await app.firstWindow();
+    await shellWin.waitForSelector('#served', { timeout: 20_000 });
 
     // 主进程内：取生产装配的 archive 句柄 → 归档一条会话 → 开真实搜索窗。
     // SEARCH_QUERY 的 ipcMain.handle 注册在 openSearchWindow 里完成（真实实例）。

@@ -37,11 +37,23 @@ describe('prepareFileInject', () => {
     expect(r.ok).toBe(true);
   });
   it('文件内容加引用块开销后超 512KB → too-large', () => {
-    // 恰好 524288 字节 ASCII：readTextFileCapped 的 size>512KB 单独判不出来，
-    // 但 buildQuoteBlock 补上围栏与文件名后的 byteLength 会越过 injectTextSchema
-    // 的 max(524288)。前者只算内容、不算组合开销——正是本任务要堵的洞：不合格
-    // payload 绝不能出门（否则被 preload 静默丢弃，用户看到"什么都没发生"）。
+    // 恰好 524288 字节 ASCII：readTextFileCapped 的 size>512KB 单独判不出来，但
+    // buildQuoteBlock 补上围栏与文件名后的组合串更大。ASCII 下先触发的是
+    // prepareFileInject 的字节检查（Buffer.byteLength > MAX_BYTES）——不是
+    // injectTextSchema 的 max(524288)（那里数 UTF-16 code unit，此例与字节数重合）。
+    // 前者只算内容、不算组合开销——正是本任务要堵的洞：不合格 payload 绝不能出门
+    //（否则被 preload 静默丢弃，用户看到"什么都没发生"）。
     const r = prepareFileInject(tmp('big.txt', 'x'.repeat(524288)));
     expect(r).toEqual({ ok: false, reason: 'too-large' });
+  });
+  it('正好等于 MAX_BYTES 的组合 payload 被接受（>` vs `>= 边界）', () => {
+    // 现算开销再补正文，让 buildQuoteBlock 的输出正好 512KB，不硬编码 524288：
+    // 上限判定必须是「大于才拒」。若把 prepareFileInject 的 > 写成 >=，这条会红。
+    const payloadSize = 512 * 1024;
+    const overhead = Buffer.byteLength(buildQuoteBlock('big.txt', ''), 'utf8');
+    const text = 'x'.repeat(payloadSize - overhead);
+    expect(Buffer.byteLength(buildQuoteBlock('big.txt', text), 'utf8')).toBe(payloadSize);
+    const r = prepareFileInject(tmp('big.txt', text));
+    expect(r).toEqual({ ok: true, payload: buildQuoteBlock('big.txt', text) });
   });
 });

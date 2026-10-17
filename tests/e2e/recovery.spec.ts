@@ -1,8 +1,9 @@
 import { test, expect, _electron as electron } from '@playwright/test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForFixtureReady } from './helpers';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -29,47 +30,54 @@ test('降级可恢复：改版页降级后，会话 DOM 回来即清主进程降
       DS_SHELL_URL: 'file://' + page.replace(/\\/g, '/'),
     },
   });
-  const shell = await app.firstWindow();
-  const degraded = () =>
-    app.evaluate(() =>
-      (globalThis as unknown as { __dsShellTestHooks: { isDegraded(): boolean } })
-        .__dsShellTestHooks.isDegraded(),
-    );
-  const pageEventCount = () =>
-    app.evaluate(() => (globalThis as unknown as { __dsPageEventCount?: number }).__dsPageEventCount ?? 0);
+  try {
+    const shell = await app.firstWindow();
+    // 剥掉外链后仍是带会话锚点的 fixture：等它就绪再进阶段一，避免 CDN 那个竞态。
+    await waitForFixtureReady(app, shell);
+    const degraded = () =>
+      app.evaluate(() =>
+        (globalThis as unknown as { __dsShellTestHooks: { isDegraded(): boolean } })
+          .__dsShellTestHooks.isDegraded(),
+      );
+    const pageEventCount = () =>
+      app.evaluate(() => (globalThis as unknown as { __dsPageEventCount?: number }).__dsPageEventCount ?? 0);
 
-  // 阶段一：登录态 fixture 有会话与 textarea → observer 正常上报、不降级。
-  // 先等真实事件到账再断言未降级：否则「observer 根本没跑」也会是未降级，断言空洞。
-  await expect.poll(pageEventCount, { timeout: 20_000 }).toBeGreaterThan(0);
-  expect(await degraded()).toBe(false);
+    // 阶段一：登录态 fixture 有会话与 textarea → observer 正常上报、不降级。
+    // 先等真实事件到账再断言未降级：否则「observer 根本没跑」也会是未降级，断言空洞。
+    await expect.poll(pageEventCount, { timeout: 20_000 }).toBeGreaterThan(0);
+    expect(await degraded()).toBe(false);
 
-  // 阶段二：清空页面（无会话、无 textarea）并每 100ms 改 DOM——空轮计数才能一路
-  // 推到阈值 20（静态空页没有后续 mutation，反而不排 tick）。阈值 20×500ms≈10s。
-  await shell.evaluate(() => {
-    document.body.replaceChildren();
-    setInterval(() => {
-      const d = document.createElement('div');
-      d.textContent = 'mutating';
-      document.body.appendChild(d);
-    }, 100);
-  });
-  await expect.poll(degraded, { timeout: 40_000 }).toBe(true);
+    // 阶段二：清空页面（无会话、无 textarea）并每 100ms 改 DOM——空轮计数才能一路
+    // 推到阈值 20（静态空页没有后续 mutation，反而不排 tick）。阈值 20×500ms≈10s。
+    await shell.evaluate(() => {
+      document.body.replaceChildren();
+      setInterval(() => {
+        const d = document.createElement('div');
+        d.textContent = 'mutating';
+        document.body.appendChild(d);
+      }, 100);
+    });
+    await expect.poll(degraded, { timeout: 40_000 }).toBe(true);
 
-  // 阶段三：会话 DOM 回来（带 textarea，signedIn 由 false 跃迁到 true）→ 下一个防抖
-  // tick 里 observer 先发 auth-state-changed(true)（R-J：清闩的第一个事件是它，不是
-  // session-list-changed——observer 先发 auth 再走会话键分支），主进程 onEvent 收到即
-  // clearDegraded；同一轮若会话内容键也变了还会补发 session-list-changed，两条路径都
-  // 能把闩放掉。没有这一步闩锁永不释放，托盘停在降级文案。
-  await shell.evaluate(() => {
-    const a = document.createElement('a');
-    a.href = 'https://chat.deepseek.com/a/chat/s/recovered1';
-    a.textContent = '恢复的会话';
-    document.body.appendChild(a);
-    document.body.appendChild(document.createElement('textarea'));
-  });
-  await expect.poll(degraded, { timeout: 20_000 }).toBe(false);
-
-  await app.close();
+    // 阶段三：会话 DOM 回来（带 textarea，signedIn 由 false 跃迁到 true）→ 下一个防抖
+    // tick 里 observer 先发 auth-state-changed(true)（R-J：清闩的第一个事件是它，不是
+    // session-list-changed——observer 先发 auth 再走会话键分支），主进程 onEvent 收到即
+    // clearDegraded；同一轮若会话内容键也变了还会补发 session-list-changed，两条路径都
+    // 能把闩放掉。没有这一步闩锁永不释放，托盘停在降级文案。
+    await shell.evaluate(() => {
+      const a = document.createElement('a');
+      a.href = 'https://chat.deepseek.com/a/chat/s/recovered1';
+      a.textContent = '恢复的会话';
+      document.body.appendChild(a);
+      document.body.appendChild(document.createElement('textarea'));
+    });
+    await expect.poll(degraded, { timeout: 20_000 }).toBe(false);
+  } finally {
+    // R-T：任一 poll 超时（阶段二 40s 的最可能）都不能跳过 close——workers:1 下泄漏的
+    // Electron 进程会一轮轮累积。
+    await app.close().catch(() => undefined);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
+  }
 });
 
 // Plan 4 Task 3（R-F）：退出前统一回收 pageEvents。dispose 的「幂等不抛」是空断言——
@@ -100,27 +108,35 @@ test('退出前回收 pageEvents：dispose 后页面再 mutation 不再进主进
       DS_SHELL_URL: 'file://' + page.replace(/\\/g, '/'),
     },
   });
-  await app.firstWindow();
-  const count = () =>
-    app.evaluate(() => (globalThis as unknown as { __dsPageEventCount?: number }).__dsPageEventCount ?? 0);
-  const dispose = () =>
-    app.evaluate(() =>
-      (globalThis as unknown as { __dsShellTestHooks: { disposePageEvents(): void } })
-        .__dsShellTestHooks.disposePageEvents(),
-    );
+  try {
+    await app.firstWindow();
+    const count = () =>
+      app.evaluate(() => (globalThis as unknown as { __dsPageEventCount?: number }).__dsPageEventCount ?? 0);
+    const dispose = () =>
+      app.evaluate(() =>
+        (globalThis as unknown as { __dsShellTestHooks: { disposePageEvents(): void } })
+          .__dsShellTestHooks.disposePageEvents(),
+      );
 
-  // 先等真实事件到账：证明监听器在工作、计数是活的（否则「不增长」也可能是 observer 根本没跑）。
-  await expect.poll(count, { timeout: 20_000 }).toBeGreaterThan(0);
-  await dispose();
-  // 留一个防抖周期让 dispose 前已排队的事件落定，再取基线——避免把在途事件算成"增长"。
-  await new Promise((r) => setTimeout(r, 800));
-  const frozen = await count();
-  // 页面继续 mutation 3s（≈6 个防抖 tick）：监听器已摘，计数必须一动不动。
-  await new Promise((r) => setTimeout(r, 3000));
-  expect(await count()).toBe(frozen);
-  // dispose 幂等：再来一次不抛、计数仍旧（生产 will-quit 只调一次，这里顺带钉幂等）。
-  await dispose();
-  expect(await count()).toBe(frozen);
-
-  await app.close();
+    // 先等真实事件到账：证明监听器在工作、计数是活的（否则「不增长」也可能是 observer 根本没跑）。
+    await expect.poll(count, { timeout: 20_000 }).toBeGreaterThan(0);
+    await dispose();
+    // 留一个防抖周期让 dispose 前已排队的事件落定，再取基线——避免把在途事件算成"增长"。
+    // R-U：这 800ms 基线静默期与下面的 3s 冻结窗口都按 preload 的 500ms 防抖
+    //（src/preload/deepseek.ts 的 schedule setTimeout）估：800ms 吸收在途的一个 tick，3s≈6 个
+    // tick 足以让"监听器还在"暴露成计数增长。防抖若被调大，这两个窗口必须同步重估，
+    // 否则页面会「因为 observer 安静而通过」——假绿。
+    await new Promise((r) => setTimeout(r, 800));
+    const frozen = await count();
+    // 页面继续 mutation 3s（≈6 个防抖 tick）：监听器已摘，计数必须一动不动。
+    await new Promise((r) => setTimeout(r, 3000));
+    expect(await count()).toBe(frozen);
+    // dispose 幂等：再来一次不抛、计数仍旧（生产 will-quit 只调一次，这里顺带钉幂等）。
+    await dispose();
+    expect(await count()).toBe(frozen);
+  } finally {
+    // R-T：poll 超时绝不能跳过 close——否则 workers:1 下泄漏的 Electron 进程会累积。
+    await app.close().catch(() => undefined);
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
+  }
 });
