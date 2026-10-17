@@ -1,23 +1,24 @@
+import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/ipc';
 import { injectTextSchema } from '../shared/pageEvent';
 import { SELECTORS } from './selectors';
 import { createObserver } from './observer';
 
-// scripts/build.mjs 不给这个入口设 external: ['electron']（overlay 入口设了），
-// `import ... from 'electron'` 会让 esbuild 去打包 electron 包主入口（Node-only）直接构建失败。
-// 从对象属性上取 require 绕过 esbuild 的静态 require 解析，产物里保留运行时
-// require——沙箱 preload 运行时恰好注入 require('electron')，语义与 external 完全等价。
-const electronModule = ({ require }).require('electron') as typeof import('electron');
-const { contextBridge, ipcRenderer } = electronModule;
-
+// 降级时序（Task 8 交接 4）：observer 默认阈值 3 轮 × 500ms ≈ 1.5s，而真实
+// DeepSeek SPA 的 hydrate 常常不止这么久——慢加载会被误判成"页面改版"而整场
+// 静默降级。两手缓解：空轮计数推迟到 DOMContentLoaded 之后才开始（加载期的
+// mutation 洪水不再消耗降级预算），并把容忍度提高到 20 轮（约 10s），
+// 真改版仍会被抓住，只是晚几秒。
 const observer = createObserver({
   doc: document,
   emit: (e) => ipcRenderer.send(IPC.PAGE_EVENT, e),
+  degradeThreshold: 20,
 });
 
+let pageReady = document.readyState !== 'loading';
 let scheduled = false;
 function schedule() {
-  if (scheduled) return;
+  if (scheduled || !pageReady) return;
   scheduled = true;
   setTimeout(() => {
     scheduled = false;
@@ -26,6 +27,13 @@ function schedule() {
     if (observer.isDegraded()) ipcRenderer.send(IPC.OBSERVER_DEGRADED);
   }, 500);
 }
+
+// document-start 时 DOMContentLoaded 尚未发生；就绪前 schedule() 一律空转，
+// 就绪瞬间补排一次首 tick。readyState 已非 loading 的极端情形由下方 schedule() 兜底。
+document.addEventListener('DOMContentLoaded', () => {
+  pageReady = true;
+  schedule();
+}, { once: true });
 
 // preload 在 document-start 执行，此时 documentElement 还不存在（null），
 // observe(documentElement) 会抛 TypeError 并杀死整个 preload（注入监听随之消失，

@@ -1,12 +1,25 @@
-import { app, BrowserWindow, Notification, shell } from 'electron';
+import { app, BrowserWindow, Notification, clipboard, shell } from 'electron';
 import { appendFileSync } from 'node:fs';
-import { createShellWindow, initShell, onShellEvent, quitApp, showOrFocusShell, toggleShell } from './shellWindow';
+import { createShellWindow, getShellWindow, initShell, onShellEvent, quitApp, showOrFocusShell, toggleShell } from './shellWindow';
 import { createTray } from './tray';
 import { registerHotkeys } from './hotkeys';
+import { registerPageEvents } from './pageEvents';
+import { createNotifier } from './notifications';
+import { performQuickAsk } from './quickAsk';
+import { IPC } from '../shared/ipc';
 import { userDataDir } from './paths';
 
 if (process.env.DS_SHELL_USER_DATA) {
   app.setPath('userData', process.env.DS_SHELL_USER_DATA);
+}
+
+// spec §7 / Task 8 交接 2：answer-completed 的 preview 来自远端 DOM——不可信、
+// 最长 300 字符。系统通知按纯文本处理并截到 120 字符 + 省略号：
+// 折叠空白防换行注入，长度上限防一条长回答霸满整个通知条。
+const NOTIFY_BODY_MAX_CHARS = 120;
+function safeNotifyBody(raw: string): string {
+  const text = raw.replace(/\s+/g, ' ').trim();
+  return text.length > NOTIFY_BODY_MAX_CHARS ? `${text.slice(0, NOTIFY_BODY_MAX_CHARS)}…` : text;
 }
 
 // 模块级只留托盘句柄：store 由 whenReady 里的局部 const 持有（whenReady 全进程只跑
@@ -57,13 +70,68 @@ if (!gotLock) {
       onSettings: () => { void shell.openPath(settings.path()); },
       onQuit: quitApp,
     });
+    // M2 事件管线：preload observer 上报 → pageEvents 校验分发 → 节流通知。
+    // notifier 的 show 是唯一接触 Electron Notification 的地方（Task 4 纯逻辑），
+    // 点击通知唤起窗口；body 必经 safeNotifyBody 截断（交接 2，见上）。
+    const notifier = createNotifier({
+      settings: () => settings.get(),
+      show: (title, body) => {
+        const n = new Notification({ title, body: safeNotifyBody(body) });
+        n.on('click', () => showOrFocusShell());
+        n.show();
+      },
+      now: () => Date.now(),
+    });
+    // 交接 5：preload 降级闩锁后每个防抖 tick 都会重发 OBSERVER_DEGRADED，
+    // 主进程必须幂等——托盘只在首次降级时翻牌一次，之后的重复上报直接吞掉。
+    let degradedLatched = false;
+    registerPageEvents({
+      // 只认壳窗口当前 webContents 的上报；-1 让"无窗口"时全部拒收。
+      expectedWebContentsId: () => getShellWindow()?.webContents.id ?? -1,
+      onEvent: (e) => {
+        notifier(e);
+        if (process.env.DS_SHELL_TEST_HOOKS) {
+          const g = globalThis as unknown as { __dsPageEventCount?: number; __dsPageEventTypes?: string[] };
+          g.__dsPageEventCount = (g.__dsPageEventCount ?? 0) + 1;
+          (g.__dsPageEventTypes ??= []).push(e.type);
+        }
+      },
+      onDegraded: () => {
+        if (degradedLatched) return;
+        degradedLatched = true;
+        tray?.set({ degraded: true, unread: 0 });
+        if (process.env.DS_SHELL_TEST_HOOKS) {
+          const g = globalThis as unknown as { __dsDegradedFlips?: number };
+          g.__dsDegradedFlips = (g.__dsDegradedFlips ?? 0) + 1;
+        }
+      },
+    });
     // 全局快捷键：跨应用唤起是常驻壳的核心价值。冲突走一条系统通知而不是弹窗，
     // 让用户知道"为什么按了没反应"，而不是静默失灵。
     const hotkeys = registerHotkeys({
       toggleHotkey: settings.get().toggleHotkey,
       quickAskHotkey: settings.get().quickAskHotkey,
       onToggle: toggleShell,
-      onQuickAsk: () => { /* Plan 2 的划词注入接管此处；当前仅唤起窗口 */ showOrFocusShell(); },
+      // M2 划词提问（Task 5）：读剪贴板 → 校验 → 投递注入给远端 preload。
+      // 空剪贴板/超限都走 notifyEmpty 一条轻通知（交接 6），不静默失灵；
+      // 绝不把不合格的文本写进剪贴板或远端输入框。
+      // 偏差（brief 原文 `readClipboardText: () => clipboard.readText()`）：Electron 44
+      // 的 clipboard.readText() 返回 Promise<string>，而 performQuickAsk 是同步契约，
+      // 故先 await 读取再以同步 getter 注入；读取失败按空剪贴板提示，绝不静默失灵。
+      onQuickAsk: () => {
+        void clipboard
+          .readText()
+          .then((text) =>
+            performQuickAsk({
+              readClipboardText: () => text,
+              sendInject: (t) => { getShellWindow()?.webContents.send(IPC.INJECT_TEXT, { text: t }); },
+              notifyEmpty: () => { new Notification({ title: '剪贴板为空', body: '请先选中要提问的文字' }).show(); },
+            }),
+          )
+          .catch(() => {
+            new Notification({ title: '剪贴板为空', body: '请先选中要提问的文字' }).show();
+          });
+      },
       onConflict: (which, key) => {
         new Notification({
           title: '快捷键不可用',
