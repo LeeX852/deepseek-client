@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { waitForFixtureReady } from './helpers';
+import { sendCtrlKeyPress, waitForFixtureReady } from './helpers';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -79,29 +79,6 @@ async function listenOnFreePort(srv: Server): Promise<string> {
 const searchWindowCount = (app: ElectronApplication): Promise<unknown> =>
   app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows().filter((w) => w.webContents.getURL().includes('renderer/search')).length);
-
-// 真实按键驱动：向目标窗口的 webContents 发浏览器进程级输入事件。
-// 为什么不用 Playwright 的 keyboard.press（CDP Input.dispatchKeyEvent）：
-// 本机 spike 实证 CDP 注入的按键不经过浏览器进程输入管线，
-// before-input-event 一次都收不到（监听器空日志）；sendInputEvent 则以
-// {type:'keyDown', key:'k', control:true} 真实命中 before-input-event，并驱动
-// 生产处理链开出搜索窗/落导出通知——和物理键盘走进来的是同一条拦截链。
-// 按同一性定位窗口而不是 getAllWindows 下标（实测搜索窗可能排在壳窗之前）：
-// login = persist:deepseek 分区（与 index.ts 生产过滤同一判据）、
-// search = renderer/search 页。成对发 keyDown+keyUp：谓词只认 keyDown，
-// 补 keyUp 收尾不悬修饰键。
-type KeyTarget = 'login' | 'search';
-async function sendCtrlKeyPress(app: ElectronApplication, target: KeyTarget, keyCode: 'K' | 'E'): Promise<void> {
-  await app.evaluate(({ BrowserWindow, session }, p: { target: KeyTarget; keyCode: 'K' | 'E' }) => {
-    const windows = BrowserWindow.getAllWindows();
-    const wc = p.target === 'login'
-      ? windows.find(w => w.webContents.session === session.fromPartition('persist:deepseek'))?.webContents
-      : windows.find(w => w.webContents.getURL().includes('renderer/search'))?.webContents;
-    if (!wc) throw new Error(`找不到 ${p.target} 目标窗口`);
-    wc.sendInputEvent({ type: 'keyDown', keyCode: p.keyCode, modifiers: ['control'] });
-    wc.sendInputEvent({ type: 'keyUp', keyCode: p.keyCode, modifiers: ['control'] });
-  }, { target, keyCode });
-}
 
 test('M3 装配端到端：observer 带真 sessionId+title 落归档，搜索用【归档标题】跳转', async () => {
   // 合成一个最小"对话页"：两条会话 <a>（ds-focus-ring+标题）、一用户一助手消息、输入框。

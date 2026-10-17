@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sendCtrlKeyPress } from './helpers';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -80,6 +81,48 @@ test('Ctrl+O：小文件经真实注入链写进 textarea；超限文件不动 t
     await injectWith(bigPath);
     await expect.poll(noticeTitles, { timeout: 5000 }).toContain('文件过大');
     expect(await taValue()).toBe(afterSmall);
+  } finally {
+    await app.close();
+  }
+});
+
+// Task 6a：真实按键路径。上一条用例直调 __dsShellTestHooks.injectLocalFile，绕过了
+// before-input-event——把 index.ts 的 `key === 'o'` 误写成 'O' 也能全绿。这里向壳窗口
+// 发真实 Ctrl+O（sendCtrlKeyPress，与 Ctrl+K/Ctrl+E 同一条浏览器进程输入链），钉死
+// before-input-event 的按键谓词。原生打开框无法自动化：只把主进程 dialog.showOpenDialog
+// 换成返回测试文件，其余（键谓词 → injectLocalFile → fileInjectDeps.pickOpenPath →
+// prepareFileInject → INJECT_TEXT → preload injectText）全是生产链。
+test('Ctrl+O 真实按键路径：before-input-event 命中后经生产注入链写进 textarea', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ds-inject-keyo-'));
+  const page = path.join(dir, 'index.html');
+  writeFileSync(page, `<!doctype html><meta charset=utf-8><body>
+    <textarea id="t"></textarea>
+    <script>const t=document.getElementById('t');let state='';
+    t.addEventListener('input',()=>{state=t.value;document.title='state:'+state;});</script>
+    </body>`);
+  const smallPath = path.join(dir, 'real-key.txt');
+  writeFileSync(smallPath, 'hello real ctrl-o');
+
+  const app = await electron.launch({
+    args: ['.'], cwd: repoRoot,
+    env: { ...process.env, DS_SHELL_TEST_HOOKS: '1', DS_SHELL_USER_DATA: dir, DS_SHELL_URL: 'file://' + page.replace(/\\/g, '/') },
+  });
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    await app.evaluate(({ dialog }, filePath: string) => {
+      (dialog as unknown as { showOpenDialog(...args: unknown[]): Promise<{ canceled: boolean; filePaths: string[] }> })
+        .showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
+    }, smallPath);
+
+    await sendCtrlKeyPress(app, 'login', 'O');
+
+    const taValue = () => win.evaluate(() => (document.querySelector('textarea') as HTMLTextAreaElement).value);
+    await expect.poll(taValue, { timeout: 5000 }).toContain('hello real ctrl-o');
+    const value = await taValue();
+    expect(value).toContain('```real-key.txt');
+    expect(value.endsWith('```\n')).toBe(true);
   } finally {
     await app.close();
   }
