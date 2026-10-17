@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -320,5 +320,99 @@ test('Ctrl/Cmd+E 按键分支与导出写路径：真实胶水落盘 Markdown（
     for (const dir of [userData, outDir]) {
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
     }
+  }
+});
+
+// R-P（Task 5）：Task 3 处理的「壳窗口重建后经真实搜索跳转」这条用户路径此前零覆盖——
+// 上面两条用例都在「壳窗口已就绪」的态上跳转。这条用例走完整路径：closeToTray:false 下
+// 用户关掉壳窗口 → 生产 openSearch 开搜索窗 → searchApi.jump → jumpToSession 经
+// showOrFocusShell 重建窗口 → 断言点击落在【重建后】的窗口里。
+// 诚实标注（Task 5 实测）：把 jumpToSession 的 `isLoading()` 延后分支删成裸 send()
+//（已确认该场景 isLoading()===true 走延后分支，但 Electron 44 会把早发的 send 缓冲到
+// preload 装好监听后再投递），本用例依旧绿——延后分支在此环境不可观测。故此用例钉的是
+// 「重建路径本身可用」，不是「延后分支可逆性」；证据与裁决见 task-5-report.md。
+test('关闭壳窗口后经真实搜索跳转：点击落在重建后的窗口里', async () => {
+  const SESSION_ID = 'e2erebuild0001';
+  const SESSION_TITLE = 'e2e 重建后跳转';
+  const page = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>
+    <a href="/a/chat/s/${SESSION_ID}"><div class="ds-focus-ring"></div><div>${SESSION_TITLE}</div></a>
+    <div class="ds-message"><div>你好</div></div>
+    <textarea></textarea>
+  </body></html>` + RECORDER;
+
+  const srv = servingFixture(page);
+  const base = await listenOnFreePort(srv);
+  const userData = mkdtempSync(path.join(tmpdir(), 'ds-rebuild-user-'));
+  // closeToTray:false → 用户关窗时 shellWindow 的 close 处理器放行、窗口真销毁；
+  // window-all-closed 空转，进程与托盘留在原地（同 offline.spec 的既有先例）。
+  writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ version: 1, closeToTray: false }));
+  const app = await electron.launch({
+    args: ['.'], cwd: repoRoot,
+    env: {
+      ...process.env,
+      DS_SHELL_TEST_HOOKS: '1',
+      DS_SHELL_USER_DATA: userData,
+      DS_SHELL_URL: base + 'a/chat/s/' + SESSION_ID,
+    },
+  });
+  try {
+    const shellWin = await app.firstWindow();
+    await shellWin.waitForLoadState('domcontentloaded');
+    await expect
+      .poll(() => shellWin.evaluate(() => document.querySelectorAll('a[href*="/a/chat/s/"]').length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    // 先等真实 observer 把这条会话落进归档，跳转才有一个真标题可用。
+    const archiveDir = path.join(userData, 'archive');
+    await expect
+      .poll(() => readdirSync(archiveDir).filter((f) => f.endsWith('.json')).length, { timeout: 30_000 })
+      .toBeGreaterThan(0);
+    const recFile = readdirSync(archiveDir).find((f) => f.endsWith('.json'))!;
+    const rec = JSON.parse(readFileSync(path.join(archiveDir, recFile), 'utf8')) as { id: string; title: string };
+    expect(rec.id).toBe(SESSION_ID);
+
+    // 关掉壳窗口（http 页，非覆盖层的 file://）：窗口真销毁，指针清空。
+    await app.evaluate(({ BrowserWindow }) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { if (!w.isDestroyed() && !w.webContents.isDestroyed() && !w.webContents.getURL().startsWith('file://')) w.close(); } catch { /* 销毁途中不关第二次 */ }
+      }
+    });
+    await expect
+      .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 10_000 })
+      .toBe(0);
+
+    // 真实搜索路径：生产 openSearch 开搜索窗（同 Ctrl+K 的入口），搜索页里再 jump。
+    const searchReady = app.waitForEvent('window', { timeout: 30_000 });
+    await app.evaluate(() => {
+      const g = globalThis as unknown as { __dsShellTestHooks?: ShellHooks };
+      if (!g.__dsShellTestHooks) throw new Error('测试钩子未安装：主进程启动时缺少 DS_SHELL_TEST_HOOKS');
+      g.__dsShellTestHooks.openSearch();
+    });
+    const searchWin = await searchReady;
+    await searchWin.waitForLoadState('domcontentloaded');
+
+    // 跳转会同步触发 showOrFocusShell → 重建壳窗口。先挂监听再接跳转，不赌时序。
+    const rebuiltReady = app.waitForEvent('window', { timeout: 30_000 });
+    await searchWin.evaluate((t: string) => {
+      (window as unknown as { searchApi: { jump(title: string): void } }).searchApi.jump(t);
+    }, rec.title);
+    const rebuilt = await rebuiltReady;
+    // 重建窗经 waitForEvent('window') 拿到，可能与它的首次导航赛跑；用 poll 式
+    // readyState 就绪判定而非 waitForLoadState（后者只盯"下一次"加载事件，可能空等）。
+    await rebuilt.waitForFunction(() => document.readyState === 'complete', undefined, { timeout: 20_000 });
+
+    // 断言点击落在【重建后】的窗口里：新窗的记录器把标题改成 CLICKED::<title>。
+    await expect
+      .poll(() => rebuilt.evaluate(() => document.title), { timeout: 20_000 })
+      .toBe('CLICKED::' + SESSION_TITLE);
+
+    // 交接 D 在重建路径上同样成立：跳转关掉搜索窗，不留悬空面板。
+    await expect
+      .poll(() => searchWindowCount(app), { timeout: 10_000 })
+      .toBe(0);
+  } finally {
+    await app.close().catch(() => undefined);
+    srv.close();
+    try { rmSync(userData, { recursive: true, force: true }); } catch { /* Windows 句柄未释放时跳过 */ }
   }
 });
