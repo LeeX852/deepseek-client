@@ -1,5 +1,5 @@
 import { SELECTORS } from './selectors';
-import type { PageEvent } from '../shared/pageEvent';
+import { CONVERSATION_EMIT_MAX, SESSION_LIST_MAX, type PageEvent } from '../shared/pageEvent';
 
 const idFromHref = (href: string): string | null => {
   const m = href.match(/\/a\/chat\/s\/([A-Za-z0-9_-]{1,64})/);
@@ -46,10 +46,10 @@ export function extractLatestAnswerPreview(doc: Document): string | null {
   return text ? text.slice(0, 300) : null;
 }
 
-// 上报上限：必须与 pageEvent.ts conversationUpdatedSchema 的 messages.max(200) 对齐。
-// extractConversation 不设条数上限，超限事件会被主进程 safeParse 整条拒掉、
-// 静默丢归档，所以 emit 前必须先截断（保留最后 200 条 = 最新的对话窗口）。
-const CONVERSATION_EMIT_MAX = 200;
+// 上报上限（SESSION_LIST_MAX / CONVERSATION_EMIT_MAX）由 ../shared/pageEvent 单一
+// 事实源提供，schema 侧用的是同两个常量。extractSessions/extractConversation 自身
+// 不设条数上限，超限事件会被主进程 safeParse 整条拒掉、静默丢归档/丢列表，
+// 所以 emit 前必须先截断（会话保留前 500 条，对话保留最后 200 条 = 最新窗口）。
 
 export function createObserver(opts: {
   doc: Document;
@@ -73,23 +73,25 @@ export function createObserver(opts: {
   return {
     isDegraded: () => degraded,
     tick() {
-      if (degraded) return;
       const sessions = extractSessions(doc);
       const signedIn = extractSignedIn(doc);
+      // auth 变化先报（登出 signedIn:false 必须在「空轮降级」早返回之前发出，
+      // 否则真实登出页（无 textarea、无会话）永远走不到 emit，通知侧收不到登出）。
+      if (signedIn !== lastSignedIn) {
+        lastSignedIn = signedIn;
+        emit({ type: 'auth-state-changed', signedIn });
+      }
       if (!sessions.length && !signedIn) {
         if (++emptyRounds >= threshold) degraded = true;
         return;
       }
       emptyRounds = 0;
-
-      if (signedIn !== lastSignedIn) {
-        lastSignedIn = signedIn;
-        emit({ type: 'auth-state-changed', signedIn });
-      }
-      const key = sessions.map(s => `${s.id}\u0000${s.title}`).join('\u0001');
+      if (degraded) degraded = false; // 探到好轮即恢复（见 Task 2 主进程侧配套）
+      const capped = sessions.slice(0, SESSION_LIST_MAX);
+      const key = capped.map(s => `${s.id}\u0000${s.title}`).join('\u0001');
       if (key !== lastSessionKey) {
         lastSessionKey = key;
-        emit({ type: 'session-list-changed', sessions });
+        emit({ type: 'session-list-changed', sessions: capped });
       }
     },
     answerCompleted() {

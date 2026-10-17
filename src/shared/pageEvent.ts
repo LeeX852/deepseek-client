@@ -6,6 +6,12 @@ import { z } from 'zod';
 const SAFE_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const safeKeySchema = z.string().regex(SAFE_KEY_RE);
 
+// Plan 4 Task 1：上报上限由 schema 与 preload observer 共用（单一事实源）。
+// observer emit 前必须按这两个常量截断——超阈值事件会被主进程 safeParse 整条
+// 拒掉、静默丢事件，所以两侧绝不能各写各的字面量。
+export const SESSION_LIST_MAX = 500;
+export const CONVERSATION_EMIT_MAX = 200;
+
 export const sessionListItemSchema = z.object({
   id: safeKeySchema,
   title: z.string().max(200),
@@ -22,11 +28,11 @@ export const conversationUpdatedSchema = z.object({
   // RW-1：observer 现在带真实侧边栏摘要标题（≤200，与 extractSessions 同口径）。
   // 归档 title 用它，搜索/跳转据此匹配侧边栏 <a>——C-1 的承重字段。
   title: z.string().max(200).optional(),
-  messages: z.array(conversationMessageSchema).max(200),
+  messages: z.array(conversationMessageSchema).max(CONVERSATION_EMIT_MAX),
 });
 
 export const pageEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('session-list-changed'), sessions: z.array(sessionListItemSchema).max(500) }),
+  z.object({ type: z.literal('session-list-changed'), sessions: z.array(sessionListItemSchema).max(SESSION_LIST_MAX) }),
   z.object({
     type: z.literal('answer-completed'),
     sessionId: safeKeySchema.optional(),
