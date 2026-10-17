@@ -1,5 +1,9 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createExportAction } from '../../src/main/archive/exportAction';
+import { createArchiveStore } from '../../src/main/archive/store';
 import type { ArchivedSession } from '../../src/main/archive/store';
 
 const older: ArchivedSession = { id: 'a', title: '旧会话', updatedAt: 100, messages: [{ role: 'user', text: '早' }] };
@@ -89,5 +93,46 @@ describe('createExportAction（Task 7 交接 A：Ctrl/Cmd+E 导出链路）', ()
       notify: () => { throw new Error('must not reach'); },
     });
     await expect(h()).rejects.toThrow('dialog unavailable');
+  });
+
+  // I-3 修复：导出写路径。fake 只有保存框（注入临时路径，绕开原生 dialog），
+  // store 是真实 createArchiveStore（upsert→落盘→list/get 读回），writeMarkdown
+  // 与 index.ts 生产胶水逐字同构（writeFileSync utf8）。磁盘上读回来的 Markdown
+  // 必须含标题行与角色标签——§15.7 的接线就此钉死，不需要真对话框。
+  it('真实 store + 真实写盘 + fake 保存路径：磁盘文件含标题行与角色标签（§15.7 写路径）', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ds-export-unit-'));
+    try {
+      const store = createArchiveStore(dir);
+      store.upsert({
+        type: 'conversation-updated',
+        messages: [
+          { role: 'user', text: '导出会话标题' },
+          { role: 'assistant', text: '导出回答正文' },
+        ],
+      });
+      // 直接在临时根目录落盘（store 自己已建好 archive 子目录，这里不再造目录）。
+      const out = path.join(dir, 'picked-export.md');
+      const picked: string[] = [];
+      const notices: string[] = [];
+      const run = createExportAction({
+        list: () => store.list(),
+        get: (id) => store.get(id),
+        pickSavePath: async (defaultPath) => { picked.push(defaultPath); return out; },
+        writeMarkdown: (filePath, markdown) => { writeFileSync(filePath, markdown, 'utf8'); },
+        notify: (title) => { notices.push(title); },
+      });
+      await run();
+      // 建议名来自归档标题（sanitize 后 + .md），不是硬编码。
+      expect(picked).toEqual(['导出会话标题.md']);
+      const md = readFileSync(out, 'utf8');
+      expect(md.split('\n')[0]).toBe('# 导出会话标题');
+      expect(md).toContain('**你**');
+      expect(md).toContain('**DeepSeek**');
+      expect(md).toContain('导出回答正文');
+      // 成功路径不通知（静默即用户可见的落盘文件本身）。
+      expect(notices).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

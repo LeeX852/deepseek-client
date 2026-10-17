@@ -7,7 +7,7 @@ import { registerPageEvents } from './pageEvents';
 import { createNotifier } from './notifications';
 import { performQuickAsk } from './quickAsk';
 import { createArchiveStore, type ArchiveStore } from './archive/store';
-import { createExportAction } from './archive/exportAction';
+import { createExportAction, type ExportActionDeps } from './archive/exportAction';
 import { closeSearchWindow, openSearchWindow } from './search';
 import { IPC } from '../shared/ipc';
 import { userDataDir } from './paths';
@@ -52,7 +52,12 @@ const openSearch = (): void => {
 
 // 交接 A（spec §15.7）：Ctrl/Cmd+E 导出最近更新的归档会话。纯转换与全部决策分支
 // 在 exportAction（有单测）；这里只做 Electron 胶水。
-const exportRecentSession = createExportAction({
+// I-3 修复：胶水声明成 exportDeps 对象、exportRecentSession 收可选 overrides——
+// 生产按键路径不带 overrides，走的仍是真实 dialog+writeFileSync，行为逐字不变；
+// e2e 可注入假 pickSavePath 覆盖真实落盘线（否则原生保存框在主进程里永远不可
+// 自动化，导出写路径只剩纯决策单测）。createExportAction 是纯工厂，每次触发
+// 新建一层包装，与原先的常驻 action 等价。
+const exportDeps: ExportActionDeps = {
   list: () => archive?.list() ?? [],
   get: (id) => archive?.get(id),
   // 有壳窗口时保存框挂到壳上（父窗口模态）；无壳走无参重载。canceled 时
@@ -66,8 +71,18 @@ const exportRecentSession = createExportAction({
     return result.canceled || !result.filePath ? null : result.filePath;
   },
   writeMarkdown: (filePath, markdown) => { writeFileSync(filePath, markdown, 'utf8'); },
-  notify: (title, body) => { new Notification({ title, body }).show(); },
-});
+  notify: (title, body) => {
+    // 与 __dsPageEventCount 同一纪律：钩子置位时先在主进程记一笔，e2e 才能
+    // 观测到「Ctrl+E 按键真的走到了导出 action」（空归档提示分支不开原生对话框）。
+    if (process.env.DS_SHELL_TEST_HOOKS) {
+      const g = globalThis as unknown as { __dsExportNotices?: Array<{ title: string; body: string }> };
+      (g.__dsExportNotices ??= []).push({ title, body });
+    }
+    new Notification({ title, body }).show();
+  },
+};
+const exportRecentSession = (overrides?: Partial<ExportActionDeps>): Promise<void> =>
+  createExportAction({ ...exportDeps, ...overrides })();
 
 // 测试钩子（brief Step 4「暴露测试钩子」）：只在 DS_SHELL_TEST_HOOKS 置位时挂载，
 // 生产启动路径不留任何全局。生命周期 API 只能由主进程调用，而 e2e 必须在同一个
@@ -85,11 +100,12 @@ if (process.env.DS_SHELL_TEST_HOOKS) {
     },
     // Task 5 评审交接 C：index.ts 已是装配点，e2e 不再用临时 CJS bundle 自拼
     // store/搜索窗——这里露出生产装配的同一批实例（真实 archive、真实
-    // openSearchWindow+jumpToSession 回调、真实导出 action），e2e 驱动的
-    // 就是用户按 Ctrl+K/Ctrl+E 会走到的那条线。
+    // openSearchWindow 入口、可注入的导出 action），e2e 驱动的就是用户按
+    // Ctrl+K/Ctrl+E 会走到的那条线。I-3 修复：jumpToSession 条目删除——搜索页
+    // searchApi.jump → SEARCH_JUMP → 生产 onJump 才是它的真实路径，
+    // search-jump.spec 已把那条线钉死，直调钩子是无人使用的死表面。
     getArchive: () => archive,
     openSearch,
-    jumpToSession,
     exportRecentSession,
   };
 }
