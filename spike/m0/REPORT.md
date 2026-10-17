@@ -1,15 +1,15 @@
 # M0 前置验证报告
 
-> 状态：spike 代码已就绪并在**未登录**状态下跑通（见"已验证 / 未验证"）。
-> 五项结论必须等真人登录跑完 Step 3 后才能填写，当前一律为 `PENDING-USER-RUN`。
+> 状态：2026-10-17 真人登录跑通，风险 1/2/5 已定论为**通过**；风险 3/4（注入 / 合成 paste）
+> 仍待操作者在 spike 窗口内按一次 `Ctrl+Shift+U` 采集 `[probe] insert / paste` 日志后填写。
 
 | # | 风险项 | 判据 | 结论 | 证据 |
 |---|---|---|---|---|
-| 1 | 站点是否拒绝本环境 | 页面正常渲染并可登录，无 bot 拦截 | PENDING-USER-RUN | spike/m0/out/manual.json 的 url + 截图说明 |
-| 2 | preload 的 DOM 可达性与 CSP | observer 能读到会话列表、消息节点、登录标志 | PENDING-USER-RUN | SELECTORS 每项在 fixture 中的命中数 |
-| 3 | 输入框注入是否被 React 接受 | 控制台 persisted=true | PENDING-USER-RUN | `[probe] insert ...` 原始日志行 |
-| 4 | 合成 paste 带 File 能否被页面接收 | 页面出现附件缩略图 | PENDING-USER-RUN | 人工观察说明 |
-| 5 | 登录是否在 deepseek 域内完成 | did-navigate 全程 hostname 属于白名单 | PENDING-USER-RUN | `[spike] navigate ->` 全部日志行 |
+| 1 | 站点是否拒绝本环境 | 页面正常渲染并可登录，无 bot 拦截 | 通过 | 微信扫码登录后 `manual.json` url=`chat.deepseek.com/a/chat/s/<uuid>`，DOM 有 100 条会话与消息；同环境 curl 直连返回 429，Electron 不受影响 |
+| 2 | preload 的 DOM 可达性与 CSP | observer 能读到会话列表、消息节点、登录标志 | 通过 | 定稿 `src/preload/selectors.ts`；`tests/unit/selectors-contract.test.ts` 对真实 fixture 全绿：sessionItem 命中 100、messageItem/assistantMessage/inputBox/sendButton 均命中，signed-out 全部不命中。关键：稳定钩子是 `ds-*` 设计系统类 + `a[href*="/a/chat/s/"]` URL 结构，哈希 CSS-Module 类不作选择器 |
+| 3 | 输入框注入是否被 React 接受 | 控制台 persisted=true | PENDING-USER-RUN | 待登录后按 `Ctrl+Shift+U`，读 `[probe] insert dispatched=... persisted=...` |
+| 4 | 合成 paste 带 File 能否被页面接收 | 页面出现附件缩略图 | PENDING-USER-RUN | 待同一次 `Ctrl+Shift+U` 触发后人工看附件缩略图 + `[probe] paste=...` |
+| 5 | 登录是否在 deepseek 域内完成 | did-navigate 全程 hostname 属于白名单 | 通过 | 导航日志全程停在 `chat.deepseek.com`（含 `/authorized?provider=WECHAT` 与 `/api/v0/users/oauth/wechat/callback`）；微信二维码是 `open.weixin.qq.com` 的嵌入 iframe，顶层文档 hostname 未越白名单 |
 
 ## 对后续设计的影响
 
