@@ -91,3 +91,17 @@ export function createObserver(opts: {
     },
   };
 }
+
+// 当前对话的全部可见消息：给 Plan 3 的归档/搜索用。
+// 与 extractLatestAnswerPreview 同样的处理——折叠空白 + 截断上界（20000），
+// 单条为空（例如只有头像/图标）直接跳过，避免归档里出现空行。
+export function extractConversation(doc: Document): Array<{ role: 'user' | 'assistant'; text: string }> {
+  const out: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+  for (const m of Array.from(doc.querySelectorAll(SELECTORS.messageItem))) {
+    const isAssistant = !!m.querySelector(SELECTORS.assistantMessage);
+    const text = (m.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 20000);
+    if (!text) continue;
+    out.push({ role: isAssistant ? 'assistant' : 'user', text });
+  }
+  return out;
+}

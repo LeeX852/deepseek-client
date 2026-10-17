@@ -11,6 +11,17 @@ export const sessionListItemSchema = z.object({
   title: z.string().max(200),
 });
 
+export const conversationMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  text: z.string().max(20000),
+});
+
+export const conversationUpdatedSchema = z.object({
+  type: z.literal('conversation-updated'),
+  sessionId: safeKeySchema.optional(),
+  messages: z.array(conversationMessageSchema).max(200),
+});
+
 export const pageEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session-list-changed'), sessions: z.array(sessionListItemSchema).max(500) }),
   z.object({
@@ -20,6 +31,7 @@ export const pageEventSchema = z.discriminatedUnion('type', [
     preview: z.string().max(300).optional(),
   }),
   z.object({ type: z.literal('auth-state-changed'), signedIn: z.boolean() }),
+  conversationUpdatedSchema,
 ]);
 
 export type PageEvent = z.infer<typeof pageEventSchema>;
