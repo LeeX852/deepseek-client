@@ -9,7 +9,7 @@
 - **要求**：Windows 10+ x64。
 - **安装版（推荐）**：`DeepSeek Shell 0.1.0-setup-x64.exe`——助手式向导、可选安装目录、每用户安装（免管理员 / 无 UAC）、桌面 + 开始菜单快捷方式、自带卸载器；卸载保留登录态。
 - **免安装 portable**：`DeepSeek Shell 0.1.0-portable-win-x64.exe`——每次启动自解压到临时目录运行，适合不装东西直接试用。
-- **下载**：GitHub Releases <https://github.com/LeeX852/deepseek-client/releases>（`v0.1.0`）。
+- **下载**：GitHub Releases <https://github.com/LeeX852/deepseek-client/releases>（`v0.1.0`）。注意 GitHub 会把发布产物的文件名空格换成点（`DeepSeek.Shell.0.1.0-setup-x64.exe`），与下面「打包」里的 `dist\` 构建产物名一一对应。
 - 产物**未做代码签名**：首次运行 Windows SmartScreen 会提示「未知发布者 / Windows 已保护你的电脑」，需手动选择「仍要运行」；消除该提示需要购买代码签名证书。
 
 ## 运行
