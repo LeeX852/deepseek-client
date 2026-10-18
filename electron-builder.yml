@@ -8,7 +8,19 @@ files:
   - package.json
 win:
   target:
+    - nsis
     - portable
   icon: resources/icon.png
+
+nsis:
+  oneClick: false                      # 助手式：向导里可选安装目录
+  perMachine: false                    # 每用户安装，免管理员/UAC
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DeepSeek Shell
+  deleteAppDataOnUninstall: false      # 卸载绝不删 %APPDATA%\ds-shell，否则卸载重装要重新登录
+  artifactName: "${productName} ${version}-setup-x64.exe"
+
 portable:
   artifactName: "${productName} ${version}-portable-win-x64.exe"
