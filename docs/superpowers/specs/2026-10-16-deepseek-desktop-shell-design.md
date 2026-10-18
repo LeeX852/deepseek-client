@@ -21,7 +21,7 @@
 | 运行时 | Electron | Tauri：托盘、快捷键、通知、文件系统多数要走 Rust 侧，需装 Rust 工具链，往远程页注入能力更弱，Windows WebView2 行为偶有不一致；PWA/`--app` 快捷方式：做不到原生增强 |
 | 工作区 Agent（"工作模式"） | 移出 V1，日后单独立项 | 官方 [DeepSeek Harness 桌面端](https://www.deepseek.com/download/)（2026-09-29 v0.2 预览版）已覆盖"登录账号 + 选工作区 + Agent 任务"，自研其子集成本高且难以更好 |
 | 会话数据获取 | 只读已渲染 DOM | 拦截内部 API 响应：接口一改即断，且属于对私有接口的抓取，账号风控风险显著更高 |
-| 分发 | 本机自用，portable 产物 | 安装包 + 自动更新 + 签名：当前不需要，避免维护发布渠道 |
+| 分发 | 本机自用，portable 产物。<br>**2026-10-18 反转**：在 portable 之外新增 NSIS 安装包（助手式向导 / 每用户 / 免管理员），理由：需要一个可安装可卸载的正式分发形态，用于 GitHub Release 分发。仍未做：代码签名（SmartScreen 会警告）、自动更新。 | 安装包 + 自动更新 + 签名：当前不需要，避免维护发布渠道 |
 
 ## 3. 红线（安全与合规约束）
 
@@ -135,7 +135,7 @@ IPC：主进程对每条消息校验 `event.sender` 对应的 webContents 与分
 
 ## 13. 技术栈与目录结构
 
-pnpm + TypeScript（strict）+ Electron + electron-builder（portable 目标）+ Vitest + Playwright + ESLint/Prettier。
+pnpm + TypeScript（strict）+ Electron + electron-builder（portable + NSIS 安装包目标）+ Vitest + Playwright + ESLint/Prettier。
 
 ```
 src/main/        主进程模块（见第 5 节）
